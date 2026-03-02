@@ -1,0 +1,33 @@
+{
+  "name": "apple-music-api",
+  "version": "2.0.0",
+  "description": "A REST server for controlling Apple Music on macOS — with media library browsing and playback progress tracking.",
+  "main": "app.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "dev": "NODE_ENV=development node app.js",
+    "install-service": "bash scripts/install-service.sh",
+    "uninstall-service": "bash scripts/uninstall-service.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hackashaq666/apple-music-api"
+  },
+  "author": "Jon Maddox <jon@jonmaddox.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Hackashaq666/apple-music-api/issues"
+  },
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.18.2",
+    "local-itunes": "^0.4.0",
+    "morgan": "^1.10.0",
+    "osa": "2.2.0",
+    "osascript": "1.2.0",
+    "parameterize": "^0.0.7"
+  }
+}
