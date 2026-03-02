@@ -241,7 +241,7 @@ function getPlaylists(callback) {
   });
 }
 
-var libraryCache = { tracks: null, fetchedAt: 0, ttl: 5 * 60 * 1000, pending: [] };
+var libraryCache = { tracks: null, fetchedAt: 0, ttl: 60 * 60 * 1000, pending: [] };
 
 function slugify(str) {
   return str.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -567,3 +567,14 @@ getLibraryTracks(function(error, tracks) {
     console.log('Library cache warmed: ' + tracks.length + ' tracks loaded.');
   }
 });
+
+setInterval(function() {
+  libraryCache.fetchedAt = 0;
+  getLibraryTracks(function(error, tracks) {
+    if (error) {
+      console.log('Library cache refresh failed:', error.message || error);
+    } else {
+      console.log('Library cache refreshed: ' + tracks.length + ' tracks.');
+    }
+  });
+}, 30 * 60 * 1000);
