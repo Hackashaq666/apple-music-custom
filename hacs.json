@@ -1,0 +1,8 @@
+{
+  "name": "Apple Music",
+  "description": "Control Apple Music on macOS from Home Assistant — with media browser, AirPlay control, and real-time progress tracking.",
+  "render_readme": true,
+  "homeassistant": "2024.1.0",
+  "country": [],
+  "category": "integration"
+}
