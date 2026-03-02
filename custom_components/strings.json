@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Apple Music API",
+        "description": "Enter the host and port of your apple-music-api server running on your Mac.",
+        "data": {
+          "host": "Host (IP address or hostname)",
+          "port": "Port"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect. Make sure the server is running and the host/port are correct.",
+      "invalid_host": "Invalid host address.",
+      "unknown": "Unexpected error. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This Apple Music server is already configured."
+    }
+  }
+}
