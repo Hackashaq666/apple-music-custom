@@ -314,9 +314,11 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
     @property
     def volume_level(self) -> float:
         data = self._get_device_data()
-        if data:
-            vol = data.get("sound_volume", 0)
-            return float(vol) / 100.0
+        if data is not None:
+            vol = data.get("sound_volume")
+            if vol is not None:
+                self._optimistic_volume = float(vol) / 100.0
+            return self._optimistic_volume
         return self._optimistic_volume
 
     @property
@@ -334,7 +336,13 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         )
 
     async def async_set_volume_level(self, volume: float) -> None:
-        self._optimistic_volume = float(volume)
+        volume = float(volume)
+        self._optimistic_volume = volume
+        # Patch the coordinator cache immediately so polls don't snap the slider back
+        devices = getattr(self.coordinator, "_airplay_devices", {})
+        if self._device_id in devices:
+            devices[self._device_id] = dict(devices[self._device_id])
+            devices[self._device_id]["sound_volume"] = int(volume * 100)
         level = int(volume * 100)
         await self.coordinator.async_send_command(
             "PUT",
