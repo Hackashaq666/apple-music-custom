@@ -4,6 +4,12 @@ Control Apple Music on macOS from Home Assistant — with native media browser, 
 
 ---
 
+## Credits
+
+The Mac server is based on [itunes-api](https://github.com/maddox/itunes-api) by [Jon Maddox](https://github.com/maddox), with further updates by [chasut](https://github.com/chasut/itunes-api) for compatibility with the modern Apple Music app. This project extends that work with progress tracking, library browsing, and a modernized install process.
+
+---
+
 ## Overview
 
 This integration has two parts:
