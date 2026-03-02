@@ -155,7 +155,7 @@ The integration supports HA's native media browser. Navigate to:
 - **Artists** → Albums → Tracks
 - **Albums** → Tracks
 
-The library cache warms automatically in the background when HA starts. First browse after a restart may take a moment; subsequent browses are instant.
+The library cache warms automatically when the server starts and refreshes every 30 minutes in the background. The media browser should always be fast after the initial startup warm.
 
 ---
 
@@ -164,7 +164,7 @@ The library cache warms automatically in the background when HA starts. First br
 - The server must be running on your Mac for the integration to work
 - Apple Music must be open (it launches automatically when the server starts a track)
 - AirPlay device state updates every 5 seconds alongside the player state
-- The library cache refreshes every 5 minutes
+- The library cache refreshes every 30 minutes in the background and stays valid for 60 minutes — the media browser should always be fast
 - Album art is fetched from the local Mac — it is not externally accessible
 
 ---
@@ -176,7 +176,7 @@ The library cache warms automatically in the background when HA starts. First br
 - Check the Mac firewall allows connections on port 8181
 
 **Media browser is slow on first open**
-- The library cache is still warming. Wait 30–60 seconds after HA restart and try again.
+- The library cache is still warming on startup. Wait 30–60 seconds after the server starts and try again. After that it stays warm indefinitely via background refresh.
 
 **Artwork not updating**
 - Make sure you are running the latest version of both the server and the integration
