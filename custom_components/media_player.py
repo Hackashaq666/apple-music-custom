@@ -286,6 +286,7 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         super().__init__(coordinator)
         self._entry = entry
         self._device_id = device_data["id"]
+        self._optimistic_volume = float(device_data.get("sound_volume", 0)) / 100.0
         self._attr_unique_id = f"{entry.entry_id}_airplay_{self._device_id}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, f"{entry.entry_id}_airplay_{self._device_id}")},
@@ -311,12 +312,16 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         return MediaPlayerState.OFF
 
     @property
-    def volume_level(self) -> float | None:
+    def volume_level(self) -> float:
         data = self._get_device_data()
         if data:
             vol = data.get("sound_volume", 0)
-            return vol / 100.0
-        return None
+            return float(vol) / 100.0
+        return self._optimistic_volume
+
+    @property
+    def volume_step(self) -> float:
+        return 0.01
 
     async def async_turn_on(self) -> None:
         await self.coordinator.async_send_command(
@@ -329,6 +334,7 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         )
 
     async def async_set_volume_level(self, volume: float) -> None:
+        self._optimistic_volume = float(volume)
         level = int(volume * 100)
         await self.coordinator.async_send_command(
             "PUT",
