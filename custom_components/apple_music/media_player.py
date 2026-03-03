@@ -76,6 +76,7 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
     def __init__(self, coordinator: AppleMusicCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._entry = entry
+        self._optimistic_volume = 0.5
         self._attr_unique_id = f"{entry.entry_id}_player"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
@@ -130,12 +131,17 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         # Image is served from the local Mac — not reachable from outside the LAN
         return False
 
+
     @property
-    def volume_level(self) -> float | None:
+    def volume_level(self) -> float:
         vol = self._state_data.get("volume")
         if vol is not None:
-            return vol / 100.0
-        return None
+            self._optimistic_volume = float(vol) / 100.0
+        return self._optimistic_volume
+
+    @property
+    def volume_step(self) -> float:
+        return 0.01
 
     @property
     def is_volume_muted(self) -> bool | None:
@@ -194,9 +200,13 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         await self.coordinator.async_request_refresh()
 
     async def async_set_volume_level(self, volume: float) -> None:
+        self._optimistic_volume = float(volume)
+        # Patch coordinator data immediately so polls don't snap the slider back
+        if self.coordinator.data:
+            self.coordinator.data = dict(self.coordinator.data)
+            self.coordinator.data["volume"] = int(volume * 100)
         level = int(volume * 100)
         await self.coordinator.async_send_command("PUT", "/volume", data={"level": level})
-        await self.coordinator.async_request_refresh()
 
     async def async_mute_volume(self, mute: bool) -> None:
         await self.coordinator.async_send_command("PUT", "/mute", data={"muted": str(mute).lower()})
