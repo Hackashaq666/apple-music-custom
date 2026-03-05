@@ -38,7 +38,7 @@ State updates use **Server-Sent Events (SSE)** driven by macOS distributed notif
 - Shuffle and repeat modes
 - Real-time playback progress bar
 - Album art (updates per track)
-- AirPlay device selection and per-device volume control
+- AirPlay device selection and per-device volume control with instant state updates
 - Native HA media browser — browse Playlists, Artists, and Albums
 - **Instant track change and play/pause updates** via macOS distributed notifications and SSE
 - Config flow UI setup — no YAML required
