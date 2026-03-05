@@ -1,12 +1,22 @@
 # Apple Music for Home Assistant
 
-Control Apple Music on macOS from Home Assistant — with native media browser, AirPlay device control, album art, and real-time playback progress tracking.
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![GitHub release](https://img.shields.io/github/release/Hackashaq666/apple-music-hacs.svg)](https://github.com/Hackashaq666/apple-music-hacs/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Control Apple Music on macOS from Home Assistant — with native media browser, AirPlay device control, album art, real-time playback progress, and **instant push updates** via macOS distributed notifications.
+
+---
+
+## Screenshots
+
+![Apple Music for Home Assistant](screenshots/media-player.png)
 
 ---
 
 ## Credits
 
-The Mac server is based on [itunes-api](https://github.com/maddox/itunes-api) by [Jon Maddox](https://github.com/maddox), with further updates by [chasut](https://github.com/chasut/itunes-api) for compatibility with the modern Apple Music app. This project extends that work with progress tracking, library browsing, and a modernized install process.
+The Mac server is based on [itunes-api](https://github.com/maddox/itunes-api) by [Jon Maddox](https://github.com/maddox), with further updates by [chasut](https://github.com/chasut/itunes-api) for compatibility with the modern Apple Music app. This project extends that work with progress tracking, library browsing, instant push notifications, and a modernized install process.
 
 ---
 
@@ -17,6 +27,8 @@ This integration has two parts:
 1. **A REST API server** that runs on your Mac and exposes the Apple Music app over HTTP
 2. **A Home Assistant custom integration** that connects to that server
 
+State updates use **Server-Sent Events (SSE)** driven by macOS distributed notifications — track changes and play/pause reflect in HA instantly with no polling delay.
+
 ---
 
 ## Features
@@ -26,18 +38,24 @@ This integration has two parts:
 - Shuffle and repeat modes
 - Real-time playback progress bar
 - Album art (updates per track)
-- AirPlay device selection and volume control
+- AirPlay device selection and per-device volume control
 - Native HA media browser — browse Playlists, Artists, and Albums
+- **Instant track change and play/pause updates** via macOS distributed notifications and SSE
 - Config flow UI setup — no YAML required
 
 ---
 
 ## Requirements
 
+**Mac:**
 - macOS 12 or later
 - Node.js 18 or later
+- Python 3.10 or later (for the notification listener)
 - Apple Music app
+
+**Home Assistant:**
 - Home Assistant 2024.1 or later
+- HACS (for easy install)
 
 ---
 
@@ -50,45 +68,52 @@ The server runs on your Mac and gives Home Assistant a local REST API to control
 ```bash
 git clone https://github.com/Hackashaq666/apple-music-hacs.git
 cd apple-music-hacs/server
+npm install
 npm run install-service
 ```
 
-The server starts immediately on port `8181` and will auto-start at login and restart if it crashes. No other dependencies required.
+This installs two background services that auto-start at login:
 
-To use a different port:
+- **apple-music-api** — the REST API server on port `8181`
+- **apple-music-notify** — a lightweight Python listener that receives macOS Music app notifications and pushes instant state changes to HA via SSE
+
+### Notification listener setup
+
+The notification listener requires `pyobjc`. Install it once with your system Python 3:
 
 ```bash
-PORT=9000 npm run install-service
+python3 -m ensurepip
+python3 -m pip install pyobjc-framework-Cocoa
 ```
+
+> **Note:** Use Python 3.10 or later. The macOS system Python (3.9) is not supported — use [MacPorts](https://www.macports.org) or [Homebrew](https://brew.sh) to install a newer version if needed.
 
 ### Verify
 
-Open `http://localhost:8181` in your browser. You should see the Apple Music API status page showing what's currently playing.
-
-Or test via curl:
-
 ```bash
 curl http://localhost:8181/now_playing
+curl http://localhost:8181/_ping
 ```
 
-### Dev mode (optional)
+Or open `http://localhost:8181` in your browser.
 
-To run in the foreground with console logging:
+### Dev mode
+
+To run the server in the foreground with console logging:
 
 ```bash
 npm run dev
 ```
 
-### Uninstall server
+### Uninstall
 
 ```bash
-cd apple-music-hacs/server
 npm run uninstall-service
 ```
 
 ### Server API
 
-The server runs on your Mac's local IP (e.g. `http://192.168.1.100:8181`). Key endpoints:
+The server exposes a local HTTP API on port `8181`. Key endpoints:
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -112,6 +137,9 @@ The server runs on your Mac's local IP (e.g. `http://192.168.1.100:8181`). Key e
 | GET | `/airplay_devices` | List AirPlay devices |
 | PUT | `/airplay_devices/:id/on` | Enable AirPlay device |
 | PUT | `/airplay_devices/:id/off` | Disable AirPlay device |
+| PUT | `/airplay_devices/:id/volume` | Set AirPlay device volume |
+| GET | `/events` | SSE stream for instant push updates |
+| POST | `/notify` | Receive macOS Music app notifications (used internally by notify.py) |
 
 ---
 
@@ -155,7 +183,20 @@ The integration supports HA's native media browser. Navigate to:
 - **Artists** → Albums → Tracks
 - **Albums** → Tracks
 
-The library cache warms automatically when the server starts and refreshes every 30 minutes in the background. The media browser should always be fast after the initial startup warm.
+The library cache warms automatically when the server starts and refreshes every 30 minutes in the background.
+
+---
+
+## How push updates work
+
+```
+Music app → macOS distributed notification
+         → notify.py (POST /notify)
+         → server SSE broadcast (/events)
+         → Home Assistant (instant state update)
+```
+
+Track changes and play/pause reflect in HA in under a second. Playback position and AirPlay device state sync every 30 seconds via background poll.
 
 ---
 
@@ -163,9 +204,10 @@ The library cache warms automatically when the server starts and refreshes every
 
 - The server must be running on your Mac for the integration to work
 - Apple Music must be open (it launches automatically when the server starts a track)
-- AirPlay device state updates every 5 seconds alongside the player state
-- The library cache refreshes every 30 minutes in the background and stays valid for 60 minutes — the media browser should always be fast
-- Album art is fetched from the local Mac — it is not externally accessible
+- Track changes and play/pause are pushed instantly — no polling delay
+- AirPlay device state and playback position sync every 30 seconds
+- The library cache refreshes every 30 minutes and stays valid for 60 minutes
+- Album art is served from the local Mac and is not externally accessible
 
 ---
 
@@ -175,8 +217,12 @@ The library cache warms automatically when the server starts and refreshes every
 - Check the server is running: `curl http://<mac-ip>:8181/_ping`
 - Check the Mac firewall allows connections on port 8181
 
+**State not updating instantly**
+- Check the notify service is running: `cat ~/apple-music-api/log/notify.log`
+- Make sure `pyobjc-framework-Cocoa` is installed for the correct Python version
+
 **Media browser is slow on first open**
-- The library cache is still warming on startup. Wait 30–60 seconds after the server starts and try again. After that it stays warm indefinitely via background refresh.
+- The library cache is still warming on startup. Wait 30–60 seconds after the server starts. After that it stays warm indefinitely via background refresh.
 
 **Artwork not updating**
 - Make sure you are running the latest version of both the server and the integration
