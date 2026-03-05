@@ -205,6 +205,7 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         if self.coordinator.data:
             self.coordinator.data = dict(self.coordinator.data)
             self.coordinator.data["volume"] = int(volume * 100)
+        self.async_write_ha_state()
         level = int(volume * 100)
         await self.coordinator.async_send_command("PUT", "/volume", data={"level": level})
 
@@ -336,14 +337,26 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         return 0.01
 
     async def async_turn_on(self) -> None:
+        devices = getattr(self.coordinator, "_airplay_devices", {})
+        if self._device_id in devices:
+            devices[self._device_id] = dict(devices[self._device_id])
+            devices[self._device_id]["selected"] = True
+        self.async_write_ha_state()
         await self.coordinator.async_send_command(
             "PUT", f"/airplay_devices/{self._device_id}/on"
         )
+        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self) -> None:
+        devices = getattr(self.coordinator, "_airplay_devices", {})
+        if self._device_id in devices:
+            devices[self._device_id] = dict(devices[self._device_id])
+            devices[self._device_id]["selected"] = False
+        self.async_write_ha_state()
         await self.coordinator.async_send_command(
             "PUT", f"/airplay_devices/{self._device_id}/off"
         )
+        await self.coordinator.async_request_refresh()
 
     async def async_set_volume_level(self, volume: float) -> None:
         volume = float(volume)
@@ -353,6 +366,7 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         if self._device_id in devices:
             devices[self._device_id] = dict(devices[self._device_id])
             devices[self._device_id]["sound_volume"] = int(volume * 100)
+        self.async_write_ha_state()
         level = int(volume * 100)
         await self.coordinator.async_send_command(
             "PUT",
