@@ -1,6 +1,8 @@
 """Apple Music integration."""
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from datetime import timedelta
 
@@ -16,6 +18,9 @@ from .const import CONF_HOST, CONF_PORT, DOMAIN, SCAN_INTERVAL_SECONDS
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
+SSE_RECONNECT_DELAY = 5   # seconds between SSE reconnect attempts
+POLL_INTERVAL_SSE   = 30  # poll interval when SSE is active (for position/airplay sync)
+POLL_INTERVAL_FALLBACK = SCAN_INTERVAL_SECONDS  # poll interval when SSE is down
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -33,6 +38,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Start SSE listener in background
+    hass.async_create_task(coordinator._async_sse_listener())
+
     # Trigger library cache warm in the background so media browser is ready
     hass.async_create_task(_async_warm_library_cache(coordinator))
 
@@ -41,7 +49,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def _async_warm_library_cache(coordinator) -> None:
     """Hit the library endpoint once at startup to warm the server-side cache."""
-    import asyncio
     try:
         await asyncio.sleep(5)
         await coordinator.async_get("/library/albums?limit=1")
@@ -52,6 +59,9 @@ async def _async_warm_library_cache(coordinator) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    if coordinator:
+        coordinator._sse_running = False
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
@@ -59,7 +69,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 class AppleMusicCoordinator(DataUpdateCoordinator):
-    """Coordinator that polls the Apple Music API server."""
+    """Coordinator that uses SSE for instant updates with polling fallback."""
 
     def __init__(
         self,
@@ -68,21 +78,88 @@ class AppleMusicCoordinator(DataUpdateCoordinator):
         host: str,
         port: int,
     ) -> None:
-        """Initialise the coordinator."""
         self.session = session
         self.base_url = f"http://{host}:{port}"
-        # Cache of AirPlay device states keyed by device id, updated every poll
         self._airplay_devices: dict[str, dict] = {}
+        self._sse_running = True
+        self._sse_connected = False
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=SCAN_INTERVAL_SECONDS),
+            update_interval=timedelta(seconds=POLL_INTERVAL_FALLBACK),
         )
 
+    async def _async_sse_listener(self) -> None:
+        """Connect to /events SSE stream and update state on push."""
+        while self._sse_running:
+            try:
+                _LOGGER.debug("Apple Music: connecting to SSE stream")
+                async with self.session.get(
+                    f"{self.base_url}/events",
+                    timeout=aiohttp.ClientTimeout(total=None, connect=10),
+                    headers={"Accept": "text/event-stream"},
+                ) as resp:
+                    resp.raise_for_status()
+                    _LOGGER.debug("Apple Music: SSE connected — switching to %ds poll interval", POLL_INTERVAL_SSE)
+                    self._sse_connected = True
+                    self.update_interval = timedelta(seconds=POLL_INTERVAL_SSE)
+
+                    buffer = ""
+                    async for chunk in resp.content.iter_chunked(1024):
+                        if not self._sse_running:
+                            break
+                        buffer += chunk.decode("utf-8", errors="ignore")
+                        while "\n\n" in buffer:
+                            event, buffer = buffer.split("\n\n", 1)
+                            for line in event.splitlines():
+                                if line.startswith("data:"):
+                                    raw = line[5:].strip()
+                                    try:
+                                        update = json.loads(raw)
+                                        await self._async_apply_sse_update(update)
+                                    except json.JSONDecodeError:
+                                        pass
+
+            except asyncio.CancelledError:
+                break
+            except Exception as err:
+                _LOGGER.debug("Apple Music SSE disconnected: %s — retrying in %ds", err, SSE_RECONNECT_DELAY)
+
+            self._sse_connected = False
+            self.update_interval = timedelta(seconds=POLL_INTERVAL_FALLBACK)
+            if self._sse_running:
+                await asyncio.sleep(SSE_RECONNECT_DELAY)
+
+    async def _async_apply_sse_update(self, update: dict) -> None:
+        """Merge SSE notification data into current state and notify listeners."""
+        current = dict(self.data or {})
+
+        # Map notification player state
+        state = update.get("player_state", "")
+        if state:
+            current["player_state"] = state
+
+        # Update track info if track changed
+        if update.get("id") and update.get("id") != current.get("id"):
+            current["id"]              = update.get("id", current.get("id"))
+            current["name"]            = update.get("name", current.get("name"))
+            current["artist"]          = update.get("artist", current.get("artist"))
+            current["album"]           = update.get("album", current.get("album"))
+            current["player_duration"] = update.get("player_duration", current.get("player_duration"))
+            current["player_position"] = 0
+            current["position_timestamp"] = update.get("position_timestamp", current.get("position_timestamp"))
+        elif update.get("name"):
+            current["name"]   = update.get("name", current.get("name"))
+            current["artist"] = update.get("artist", current.get("artist"))
+            current["album"]  = update.get("album", current.get("album"))
+            current["position_timestamp"] = update.get("position_timestamp", current.get("position_timestamp"))
+
+        self.async_set_updated_data(current)
+
     async def _async_update_data(self) -> dict:
-        """Fetch latest player state and AirPlay device states from the server."""
+        """Poll for full player state and AirPlay devices."""
         try:
             async with self.session.get(
                 f"{self.base_url}/now_playing", timeout=aiohttp.ClientTimeout(total=5)
@@ -92,9 +169,6 @@ class AppleMusicCoordinator(DataUpdateCoordinator):
         except Exception as err:
             raise UpdateFailed(f"Error communicating with Apple Music API: {err}") from err
 
-        # Poll AirPlay devices on the same interval and cache by device id
-        # so AirPlaySpeaker entities can read current selected/volume state.
-        # Failure here is non-fatal — log and keep last known state.
         try:
             async with self.session.get(
                 f"{self.base_url}/airplay_devices", timeout=aiohttp.ClientTimeout(total=5)
@@ -109,15 +183,13 @@ class AppleMusicCoordinator(DataUpdateCoordinator):
 
         return now_playing
 
-    # ── Convenience API methods called by media_player ───────────────────────
-
     async def async_send_command(self, method: str, path: str, **kwargs) -> dict | None:
         """Send a command to the server and return the response JSON."""
         try:
             async with self.session.request(
                 method,
                 f"{self.base_url}{path}",
-                timeout=aiohttp.ClientTimeout(total=5),
+                timeout=aiohttp.ClientTimeout(total=30),
                 **kwargs,
             ) as resp:
                 resp.raise_for_status()
