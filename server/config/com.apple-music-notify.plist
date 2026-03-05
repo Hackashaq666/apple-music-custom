@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.apple-music-notify</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/local/bin/python3</string>
+        <string>/Users/tom/apple-music-api/notify.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/tom/apple-music-api/log/notify.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tom/apple-music-api/log/notify.error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>APPLE_MUSIC_API_URL</key>
+        <string>http://localhost:8181</string>
+    </dict>
+</dict>
+</plist>
