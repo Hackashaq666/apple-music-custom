@@ -329,9 +329,10 @@ function buildAlbumsByArtist(tracks, artistName) {
   var seen   = {};
   var albums = [];
   for (var i = 0; i < tracks.length; i++) {
-    var t      = tracks[i];
-    var artist = t.albumArtist || t.artist || '';
-    if (artist !== artistName) { continue; }
+    var t           = tracks[i];
+    var albumArtist = t.albumArtist || t.artist || '';
+    var artist      = t.artist || '';
+    if (albumArtist !== artistName && artist !== artistName) { continue; }
     var name = t.album;
     if (name && !seen[name]) {
       seen[name] = true;
@@ -476,6 +477,7 @@ app.get('/now_playing', function(req, res) {
 app.get('/artwork', function(req, res) {
   osascript.file(path.join(__dirname, 'lib', 'art.applescript'), function(error, data) {
     res.type('image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
     res.sendFile('/tmp/currently-playing.jpg');
   });
 });
@@ -555,6 +557,7 @@ app.get('/artwork/playlist/:name', function(req, res) {
       return res.sendStatus(404);
     }
     res.type('image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
     res.sendFile(path.resolve(filePath));
   });
 });
@@ -565,6 +568,7 @@ app.get('/artwork/artist/:artist', function(req, res) {
 
   if (fs.existsSync(cacheFile)) {
     res.type('image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
     return res.sendFile(path.resolve(cacheFile));
   }
 
@@ -581,6 +585,7 @@ app.get('/artwork/artist/:artist', function(req, res) {
         if (err) { console.log('Artist cache copy error:', err.message); }
       });
       res.type('image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
       return res.sendFile(path.resolve(file));
     }
     console.log('Artist artwork not found for:', artist);
@@ -596,6 +601,7 @@ app.get('/artwork/:artist/:album', function(req, res) {
 
   if (fs.existsSync(filePath)) {
     res.type('image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
     return res.sendFile(filePath);
   }
 
@@ -605,6 +611,7 @@ app.get('/artwork/:artist/:album', function(req, res) {
       return res.sendStatus(404);
     }
     res.type('image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
     res.sendFile(savedPath);
   });
 });
@@ -777,9 +784,11 @@ app.get('/library/albums/:artist/:album/tracks', function(req, res) {
     var results    = [];
     for (var i = 0; i < tracks.length; i++) {
       var t      = tracks[i];
-      var artist = t.albumArtist || t.artist || '';
       var album  = t.album || '';
-      if (album !== albumName || artist !== artistName) { continue; }
+      if (album !== albumName) { continue; }
+      var albumArtist = t.albumArtist || t.artist || '';
+      var artist      = t.artist || '';
+      if (albumArtist !== artistName && artist !== artistName) { continue; }
       results.push({
         id:           t.id,
         name:         t.name,

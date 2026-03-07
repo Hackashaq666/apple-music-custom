@@ -28,6 +28,7 @@
     "morgan": "^1.10.0",
     "osa": "2.2.0",
     "osascript": "1.2.0",
-    "parameterize": "^0.0.7"
+    "parameterize": "^0.0.7",
+    "sharp": "^0.34.5"
   }
 }
