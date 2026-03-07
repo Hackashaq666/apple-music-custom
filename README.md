@@ -81,7 +81,7 @@ That's it. The installer handles everything automatically:
   - **apple-music-api** — the REST API server on port `8181`
   - **apple-music-notify** — listens for macOS Music app notifications and pushes instant state changes to HA
 
-> **If Python is not found:** install it from [python.org](https://www.python.org/downloads/), run `brew install python3`, or install via MacPorts — then re-run `npm run install-service`.
+> **If Python is not found:** install Python from [python.org](https://www.python.org/downloads/), or install via [Homebrew](https://brew.sh), or install via [MacPorts](https://www.macports.org) — then re-run `npm run install-service`.
 
 ### Verify
 
