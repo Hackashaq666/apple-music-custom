@@ -200,7 +200,7 @@ Track changes and play/pause reflect in HA in under a second. Playback position 
 - The server must be running on your Mac for the integration to work
 - Apple Music must be open (it launches automatically when the server starts a track)
 - Track changes and play/pause are pushed instantly — no polling delay
-- AirPlay device state and playback position sync every 30 seconds
+- AirPlay device state and playback position sync every 30 seconds when SSE is connected, every 5 seconds when SSE is disconnected
 - The library cache refreshes every 30 minutes and stays valid for 60 minutes
 - Album art is served from the local Mac and is not externally accessible
 
