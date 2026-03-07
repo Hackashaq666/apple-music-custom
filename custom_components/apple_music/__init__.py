@@ -141,9 +141,13 @@ class AppleMusicCoordinator(DataUpdateCoordinator):
         if state:
             current["player_state"] = state
 
-        # Update track info if track changed
-        if update.get("id") and update.get("id") != current.get("id"):
-            current["id"]              = update.get("id", current.get("id"))
+        # Update track info if track changed.
+        # Ignore id "0" or "" — shuffle/seek notifications from macOS sometimes
+        # fire with PersistentID=0 (no track change), which would wrongly reset artwork.
+        new_id = update.get("id", "")
+        valid_new_id = new_id and new_id != "0"
+        if valid_new_id and new_id != current.get("id"):
+            current["id"]              = new_id
             current["name"]            = update.get("name", current.get("name"))
             current["artist"]          = update.get("artist", current.get("artist"))
             current["album"]           = update.get("album", current.get("album"))
