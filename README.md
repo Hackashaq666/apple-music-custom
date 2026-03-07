@@ -1,7 +1,7 @@
 # Apple Music for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/release/Hackashaq666/apple-music-hacs.svg)](https://github.com/Hackashaq666/apple-music-hacs/releases)
+[![GitHub release](https://img.shields.io/github/release/Hackashaq666/apple-music-custom.svg)](https://github.com/Hackashaq666/apple-music-custom/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Control Apple Music on macOS from Home Assistant — with native media browser, AirPlay device control, album art, real-time playback progress, and **instant push updates** via macOS distributed notifications.
@@ -38,7 +38,7 @@ State updates use **Server-Sent Events (SSE)** driven by macOS distributed notif
 - Shuffle and repeat modes
 - Real-time playback progress bar
 - Album art (updates per track)
-- AirPlay device selection and per-device volume control with instant state updates
+- AirPlay device selection and per-device volume control
 - Native HA media browser — browse Playlists, Artists, and Albums
 - **Instant track change and play/pause updates** via macOS distributed notifications and SSE
 - Config flow UI setup — no YAML required
@@ -49,8 +49,8 @@ State updates use **Server-Sent Events (SSE)** driven by macOS distributed notif
 
 **Mac:**
 - macOS 12 or later
-- Node.js 18 or later
-- Python 3.10 or later (for the notification listener)
+- Node.js 18 or later — [nodejs.org](https://nodejs.org) or `brew install node`
+- Python 3.10 or later (up to 3.14) — [python.org](https://www.python.org/downloads/), `brew install python3`, or MacPorts
 - Apple Music app
 
 **Home Assistant:**
@@ -67,26 +67,21 @@ The server runs on your Mac and gives Home Assistant a local REST API to control
 
 ```bash
 git clone https://github.com/Hackashaq666/apple-music-custom.git
-cd apple-music-custom/server
-npm install
+cd apple-music-custom
 npm run install-service
 ```
 
-This installs two background services that auto-start at login:
+That's it. The installer handles everything automatically:
 
-- **apple-music-api** — the REST API server on port `8181`
-- **apple-music-notify** — a lightweight Python listener that receives macOS Music app notifications and pushes instant state changes to HA via SSE
+- Verifies Node.js 18+ is installed (exits with instructions if missing)
+- Finds Python 3.10+ on your system, checking Homebrew, MacPorts, and system paths
+- Creates an isolated Python environment in `.venv/` — no global installs or pollution
+- Installs `pyobjc` into the venv
+- Registers two background services that auto-start at login and restart if they crash:
+  - **apple-music-api** — the REST API server on port `8181`
+  - **apple-music-notify** — listens for macOS Music app notifications and pushes instant state changes to HA
 
-### Notification listener setup
-
-The notification listener requires `pyobjc`. Install it once with your system Python 3:
-
-```bash
-python3 -m ensurepip
-python3 -m pip install pyobjc-framework-Cocoa
-```
-
-> **Note:** Use Python 3.10 or later. The macOS system Python (3.9) is not supported — use [MacPorts](https://www.macports.org) or [Homebrew](https://brew.sh) to install a newer version if needed.
+> **If Python is not found:** install it from [python.org](https://www.python.org/downloads/), run `brew install python3`, or install via MacPorts — then re-run `npm run install-service`.
 
 ### Verify
 
@@ -149,7 +144,7 @@ The server exposes a local HTTP API on port `8181`. Key endpoints:
 
 1. In HACS, go to **Integrations**
 2. Click the three-dot menu → **Custom repositories**
-3. Add `https://github.com/Hackashaq666/apple-music-hacs` as an **Integration**
+3. Add `https://github.com/Hackashaq666/apple-music-custom` as an **Integration**
 4. Search for **Apple Music** in HACS and install it
 5. Restart Home Assistant
 
@@ -219,13 +214,14 @@ Track changes and play/pause reflect in HA in under a second. Playback position 
 
 **State not updating instantly**
 - Check the notify service is running: `cat ~/apple-music-api/log/notify.log`
-- Make sure `pyobjc-framework-Cocoa` is installed for the correct Python version
+- Re-run `npm run install-service` to rebuild the Python environment
 
 **Media browser is slow on first open**
 - The library cache is still warming on startup. Wait 30–60 seconds after the server starts. After that it stays warm indefinitely via background refresh.
 
-**Artwork not updating**
-- Make sure you are running the latest version of both the server and the integration
+**Artwork not loading in media browser**
+- The artwork disk cache warms automatically on server startup at 500ms per album. Check progress with: `ls ~/apple-music-api/artwork-cache/ | wc -l`
+- Check server logs: `tail -f ~/apple-music-api/log/apple-music-api.log`
 
 **AirPlay devices not appearing**
 - Reload the integration: Settings → Integrations → Apple Music → Reload
