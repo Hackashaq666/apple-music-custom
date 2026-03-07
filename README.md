@@ -66,8 +66,8 @@ The server runs on your Mac and gives Home Assistant a local REST API to control
 ### Install
 
 ```bash
-git clone https://github.com/Hackashaq666/apple-music-hacs.git
-cd apple-music-hacs/server
+git clone https://github.com/Hackashaq666/apple-music-custom.git
+cd apple-music-custom/server
 npm install
 npm run install-service
 ```
