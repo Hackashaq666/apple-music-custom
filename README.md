@@ -39,7 +39,7 @@ State updates use **Server-Sent Events (SSE)** driven by macOS distributed notif
 - Real-time playback progress bar
 - Album art (updates per track)
 - AirPlay device selection and per-device volume control
-- Native HA media browser — browse Playlists, Artists, and Albums
+- Native HA media browser — browse and play Playlists, Artists, Albums, and Tracks
 - **Instant track change and play/pause updates** via macOS distributed notifications and SSE
 - Config flow UI setup — no YAML required
 
@@ -67,7 +67,7 @@ The server runs on your Mac and gives Home Assistant a local REST API to control
 
 ```bash
 git clone https://github.com/Hackashaq666/apple-music-custom.git
-cd apple-music-custom
+cd apple-music-custom/server
 npm run install-service
 ```
 
@@ -78,7 +78,7 @@ That's it. The installer handles everything automatically:
 - Creates an isolated Python environment in `.venv/` — no global installs or pollution
 - Installs `pyobjc` into the venv
 - Registers two background services that auto-start at login and restart if they crash:
-  - **apple-music-api** — the REST API server on port `8181`
+  - **apple-music-custom/server** — the REST API server on port `8181`
   - **apple-music-notify** — listens for macOS Music app notifications and pushes instant state changes to HA
 
 > **If Python is not found:** install Python from [python.org](https://www.python.org/downloads/), or install via [Homebrew](https://brew.sh), or install via [MacPorts](https://www.macports.org) — then re-run `npm run install-service`.
@@ -127,6 +127,9 @@ The server exposes a local HTTP API on port `8181`. Key endpoints:
 | GET | `/library/artists` | Browse artists |
 | GET | `/library/albums` | Browse albums |
 | GET | `/library/albums/:artist/:album/tracks` | Tracks in an album |
+| PUT | `/library/albums/:artist/:album/play` | Play an album |
+| GET | `/library/artists/:artist/tracks` | All tracks by an artist |
+| PUT | `/library/artists/:artist/play` | Play all tracks by an artist |
 | PUT | `/library/tracks/:id/play` | Play a track by ID |
 | GET | `/library/search?q=query` | Search tracks |
 | GET | `/airplay_devices` | List AirPlay devices |
@@ -172,13 +175,14 @@ Home Assistant will discover your Apple Music player and all AirPlay devices aut
 
 ### Media Browser
 
-The integration supports HA's native media browser. Navigate to:
+The integration supports HA's native media browser:
 
-- **Playlists** — play any playlist
-- **Artists** → Albums → Tracks
-- **Albums** → Tracks
+- **Playlists** — press play to start any playlist
+- **Artists** — press play to queue all tracks by the artist in album order, or expand to browse albums
+- **Albums** — press play to queue the full album in track order, or expand to select a specific track
+- **Tracks** — press play to play a single track
 
-The library cache warms automatically when the server starts and refreshes every 30 minutes in the background.
+Playing an artist or album creates a temporary playlist in Music.app so that next/previous navigation stays within the artist or album. The library cache warms automatically when the server starts and refreshes every 30 minutes in the background.
 
 ---
 
@@ -213,15 +217,15 @@ Track changes and play/pause reflect in HA in under a second. Playback position 
 - Check the Mac firewall allows connections on port 8181
 
 **State not updating instantly**
-- Check the notify service is running: `cat ~/apple-music-api/log/notify.log`
+- Check the notify service is running: `cat ~/apple-music-custom/server/log/notify.log`
 - Re-run `npm run install-service` to rebuild the Python environment
 
 **Media browser is slow on first open**
 - The library cache is still warming on startup. Wait 30–60 seconds after the server starts. After that it stays warm indefinitely via background refresh.
 
 **Artwork not loading in media browser**
-- The artwork disk cache warms automatically on server startup at 500ms per album. Check progress with: `ls ~/apple-music-api/artwork-cache/ | wc -l`
-- Check server logs: `tail -f ~/apple-music-api/log/apple-music-api.log`
+- The artwork disk cache warms automatically on server startup at 500ms per album. Check progress with: `ls ~/apple-music-custom/server/artwork-cache/ | wc -l`
+- Check server logs: `tail -f ~/apple-music-custom/server/log/apple-music-api.log`
 
 **AirPlay devices not appearing**
 - Reload the integration: Settings → Integrations → Apple Music → Reload
