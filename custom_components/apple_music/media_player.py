@@ -250,25 +250,11 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         parts = media_id.split(BROWSE_SEP)
 
         if parts[0] == "artist" and len(parts) == 2:
-            artist_id = parts[1]
             from urllib.parse import quote as urlquote
-            data = await self.coordinator.async_get(
-                f"/library/artists/{urlquote(artist_id, safe='')}/tracks"
-            )
-            if not data or not data.get("tracks"):
-                _LOGGER.warning("No tracks found for artist %s", artist_id)
-                return
-            tracks = data["tracks"]
-            first_id = tracks[0]["id"]
-            current = dict(self.coordinator.data or {})
-            current["player_state"] = "playing"
-            current["id"] = first_id
-            current["player_position"] = 0
-            current["position_timestamp"] = None
-            self.coordinator.async_set_updated_data(current)
+            artist_id = parts[1]
             self.hass.async_create_task(
                 self.coordinator.async_send_command(
-                    "PUT", f"/library/tracks/{first_id}/play"
+                    "PUT", f"/library/artists/{urlquote(artist_id, safe='')}/play"
                 )
             )
             return
@@ -277,28 +263,12 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
                 "PUT", f"/playlists/{parts[1]}/play"
             )
         elif parts[0] == "album" and len(parts) == 3:
+            from urllib.parse import quote as urlquote
             artist_id = parts[1]
             album_id  = parts[2]
-            from urllib.parse import quote as urlquote
-            data = await self.coordinator.async_get(
-                f"/library/albums/{urlquote(artist_id, safe='')}/{urlquote(album_id, safe='')}/tracks"
-            )
-            if not data or not data.get("tracks"):
-                _LOGGER.warning("No tracks found for album %s / %s", artist_id, album_id)
-                return
-            tracks = data["tracks"]
-            # Play the first track — Music.app will naturally continue through
-            # the album in track order when shuffle is off
-            first_id = tracks[0]["id"]
-            current = dict(self.coordinator.data or {})
-            current["player_state"] = "playing"
-            current["id"] = first_id
-            current["player_position"] = 0
-            current["position_timestamp"] = None
-            self.coordinator.async_set_updated_data(current)
             self.hass.async_create_task(
                 self.coordinator.async_send_command(
-                    "PUT", f"/library/tracks/{first_id}/play"
+                    "PUT", f"/library/albums/{urlquote(artist_id, safe='')}/{urlquote(album_id, safe='')}/play"
                 )
             )
             return
