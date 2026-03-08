@@ -213,6 +213,49 @@ function playTrackByID(persistentID) {
 
 
 
+function playAlbumByName(artist, album) {
+  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
+  var tracks = itunes.tracks();
+  var matching = [];
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    var tAlbum  = t.album()  || '';
+    var tArtist = t.albumArtist() || t.artist() || '';
+    if (tAlbum === album && (tArtist === artist)) {
+      matching.push(t);
+    }
+  }
+  if (matching.length === 0) { return false; }
+  // Sort by disc then track number
+  matching.sort(function(a, b) {
+    if (a.discNumber() !== b.discNumber()) return a.discNumber() - b.discNumber();
+    return a.trackNumber() - b.trackNumber();
+  });
+  matching[0].play();
+  return true;
+}
+
+function playArtistTracks(artist) {
+  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
+  var tracks = itunes.tracks();
+  var matching = [];
+  for (var i = 0; i < tracks.length; i++) {
+    var t = tracks[i];
+    var tArtist = t.albumArtist() || t.artist() || '';
+    if (tArtist === artist) { matching.push(t); }
+  }
+  if (matching.length === 0) { return false; }
+  matching.sort(function(a, b) {
+    var aAlbum = a.album() || '';
+    var bAlbum = b.album() || '';
+    if (aAlbum !== bAlbum) return aAlbum.localeCompare(bAlbum);
+    if (a.discNumber() !== b.discNumber()) return a.discNumber() - b.discNumber();
+    return a.trackNumber() - b.trackNumber();
+  });
+  matching[0].play();
+  return true;
+}
+
 function sendResponse(error, res) {
   if (error) {
     console.log(error);
@@ -840,6 +883,25 @@ app.get('/library/albums/:artist/:album/tracks', function(req, res) {
 
 app.put('/library/tracks/:id/play', function(req, res) {
   osa(playTrackByID, req.params.id, function(error, played, log) {
+    if (error) { console.log(error); res.sendStatus(500); }
+    else if (!played) { res.sendStatus(404); }
+    else { sendResponse(null, res); }
+  });
+});
+
+app.put('/library/albums/:artist/:album/play', function(req, res) {
+  var artist = req.params.artist;
+  var album  = req.params.album;
+  osa(playAlbumByName, artist, album, function(error, played, log) {
+    if (error) { console.log(error); res.sendStatus(500); }
+    else if (!played) { res.sendStatus(404); }
+    else { sendResponse(null, res); }
+  });
+});
+
+app.put('/library/artists/:artist/play', function(req, res) {
+  var artist = req.params.artist;
+  osa(playArtistTracks, artist, function(error, played, log) {
     if (error) { console.log(error); res.sendStatus(500); }
     else if (!played) { res.sendStatus(404); }
     else { sendResponse(null, res); }
