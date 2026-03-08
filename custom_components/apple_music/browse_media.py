@@ -155,7 +155,7 @@ async def _browse_artists(coordinator, entity=None) -> BrowseMedia:
             media_class=MediaClass.ARTIST,
             media_content_type=MediaType.ARTIST,
             media_content_id=f"artist{BROWSE_SEP}{artist['name']}",
-            can_play=False,
+            can_play=True,
             can_expand=True,
             thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/artist/{quote(artist['name'], safe='')}", entity, MediaType.ARTIST, f"artist{BROWSE_SEP}{artist['id']}", f"artwork/artist/{quote(artist['name'], safe='')}"),
         )
@@ -186,7 +186,7 @@ async def _browse_albums(coordinator, entity=None) -> BrowseMedia:
             media_class=MediaClass.ALBUM,
             media_content_type=MediaType.ALBUM,
             media_content_id=f"album{BROWSE_SEP}{album['artist']}{BROWSE_SEP}{album['name']}",
-            can_play=False,
+            can_play=True,
             can_expand=True,
             thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/{quote(album['artist'], safe='')}/{quote(album['name'], safe='')}", entity, MediaType.ALBUM, f"album{BROWSE_SEP}{slugify(album['artist'])}{BROWSE_SEP}{album['id']}", f"artwork/{quote(album['artist'], safe='')}/{quote(album['name'], safe='')}"),
         )
@@ -218,7 +218,7 @@ async def _browse_artist_albums(coordinator, artist_id: str, entity=None) -> Bro
             media_class=MediaClass.ALBUM,
             media_content_type=MediaType.ALBUM,
             media_content_id=f"album{BROWSE_SEP}{artist_name}{BROWSE_SEP}{album['name']}",
-            can_play=False,
+            can_play=True,
             can_expand=True,
             thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/{quote(artist_name, safe='')}/{quote(album['name'], safe='')}", entity, MediaType.ALBUM, f"album{BROWSE_SEP}{slugify(artist_name)}{BROWSE_SEP}{album['id']}", f"artwork/{quote(artist_name, safe='')}/{quote(album['name'], safe='')}"),
         )
