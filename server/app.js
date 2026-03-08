@@ -134,17 +134,19 @@ function getPlaylistsFromItunes() {
   } catch (error) {
     itunes = Application('iTunes');
   }
+  var HA_TEMP = ['HA_Play_Album', 'HA_Play_Artist'];
   playlists = itunes.playlists();
   playlistNames = [];
   for (var i = 0; i < playlists.length; i++) {
-    playlist = playlists[i];
-    data = {};
-    data['id']                  = playlist.id();
-    data['name']                = playlist.name();
-    data['loved']               = playlist.loved();
-    data['duration_in_seconds'] = playlist.duration();
-    data['time']                = playlist.time();
-    playlistNames.push(data);
+    try {
+      playlist = playlists[i];
+      var name = playlist.name();
+      if (HA_TEMP.indexOf(name) !== -1) { continue; }
+      data = {};
+      data['id']   = playlist.id();
+      data['name'] = name;
+      playlistNames.push(data);
+    } catch(e) { continue; }
   }
   return playlistNames;
 }
@@ -213,48 +215,7 @@ function playTrackByID(persistentID) {
 
 
 
-function playAlbumByName(artist, album) {
-  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
-  var tracks = itunes.tracks();
-  var matching = [];
-  for (var i = 0; i < tracks.length; i++) {
-    var t = tracks[i];
-    var tAlbum  = t.album()  || '';
-    var tArtist = t.albumArtist() || t.artist() || '';
-    if (tAlbum === album && (tArtist === artist)) {
-      matching.push(t);
-    }
-  }
-  if (matching.length === 0) { return false; }
-  // Sort by disc then track number
-  matching.sort(function(a, b) {
-    if (a.discNumber() !== b.discNumber()) return a.discNumber() - b.discNumber();
-    return a.trackNumber() - b.trackNumber();
-  });
-  matching[0].play();
-  return true;
-}
-
-function playArtistTracks(artist) {
-  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
-  var tracks = itunes.tracks();
-  var matching = [];
-  for (var i = 0; i < tracks.length; i++) {
-    var t = tracks[i];
-    var tArtist = t.albumArtist() || t.artist() || '';
-    if (tArtist === artist) { matching.push(t); }
-  }
-  if (matching.length === 0) { return false; }
-  matching.sort(function(a, b) {
-    var aAlbum = a.album() || '';
-    var bAlbum = b.album() || '';
-    if (aAlbum !== bAlbum) return aAlbum.localeCompare(bAlbum);
-    if (a.discNumber() !== b.discNumber()) return a.discNumber() - b.discNumber();
-    return a.trackNumber() - b.trackNumber();
-  });
-  matching[0].play();
-  return true;
-}
+// playAlbumByName and playArtistTracks are handled via AppleScript files
 
 function sendResponse(error, res) {
   if (error) {
@@ -771,9 +732,21 @@ function buildPlaylistCollage(playlistName, callback) {
 
 
 app.get('/playlists', function(req, res) {
-  getPlaylists(function(error, data) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json({ playlists: data }); }
+  var script = path.join(__dirname, 'lib', 'get-playlists.applescript');
+  execFile('osascript', [script], function(error, stdout) {
+    if (error) { console.log('get-playlists error:', error); return res.sendStatus(500); }
+    var playlists = [];
+    var lines = (stdout || '').trim().split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var tab = line.indexOf('\t');
+      if (tab === -1) { continue; }
+      var id   = line.substring(0, tab).trim();
+      var name = line.substring(tab + 1).trim();
+      if (id && name) { playlists.push({ id: id, name: name }); }
+    }
+    res.json({ playlists: playlists });
   });
 });
 
@@ -782,7 +755,8 @@ app.put('/playlists/:id/play', function(req, res) {
     if (error) { return res.sendStatus(500); }
     for (var i = 0; i < data.length; i++) {
       playlist = data[i];
-      if (req.params.id == parameterize(playlist['name'])) {
+      // Match by numeric id OR by parameterized name (legacy)
+      if (req.params.id == playlist['id'] || req.params.id == parameterize(playlist['name'])) {
         osa(playPlaylist, playlist['id'], function(error, data) {
           sendResponse(error, res);
         });
@@ -892,19 +866,21 @@ app.put('/library/tracks/:id/play', function(req, res) {
 app.put('/library/albums/:artist/:album/play', function(req, res) {
   var artist = req.params.artist;
   var album  = req.params.album;
-  osa(playAlbumByName, artist, album, function(error, played, log) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else if (!played) { res.sendStatus(404); }
-    else { sendResponse(null, res); }
+  var script = path.join(__dirname, 'lib', 'play-album.applescript');
+  execFile('osascript', [script, artist, album], function(error, stdout) {
+    if (error) { console.log('play-album error:', error); return res.sendStatus(500); }
+    if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
+    sendResponse(null, res);
   });
 });
 
 app.put('/library/artists/:artist/play', function(req, res) {
   var artist = req.params.artist;
-  osa(playArtistTracks, artist, function(error, played, log) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else if (!played) { res.sendStatus(404); }
-    else { sendResponse(null, res); }
+  var script = path.join(__dirname, 'lib', 'play-artist.applescript');
+  execFile('osascript', [script, artist], function(error, stdout) {
+    if (error) { console.log('play-artist error:', error); return res.sendStatus(500); }
+    if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
+    sendResponse(null, res);
   });
 });
 
