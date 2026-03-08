@@ -252,11 +252,11 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         if parts[0] == "artist" and len(parts) == 2:
             from urllib.parse import quote as urlquote
             artist_id = parts[1]
-            self.hass.async_create_task(
-                self.coordinator.async_send_command(
-                    "PUT", f"/library/artists/{urlquote(artist_id, safe='')}/play"
-                )
+            _LOGGER.debug("Playing artist: %s", artist_id)
+            await self.coordinator.async_send_command(
+                "PUT", f"/library/artists/{urlquote(artist_id, safe='')}/play"
             )
+            await self.coordinator.async_request_refresh()
             return
         elif parts[0] == "playlist" and len(parts) == 2:
             await self.coordinator.async_send_command(
@@ -266,11 +266,11 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             from urllib.parse import quote as urlquote
             artist_id = parts[1]
             album_id  = parts[2]
-            self.hass.async_create_task(
-                self.coordinator.async_send_command(
-                    "PUT", f"/library/albums/{urlquote(artist_id, safe='')}/{urlquote(album_id, safe='')}/play"
-                )
+            _LOGGER.debug("Playing album: %s / %s", artist_id, album_id)
+            await self.coordinator.async_send_command(
+                "PUT", f"/library/albums/{urlquote(artist_id, safe='')}/{urlquote(album_id, safe='')}/play"
             )
+            await self.coordinator.async_request_refresh()
             return
         elif parts[0] == "track" and len(parts) == 2:
             # Optimistically update state so UI feels instant
