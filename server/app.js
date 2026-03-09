@@ -174,17 +174,25 @@ var FETCH_TRACKS_SCRIPT = [
   'var raw = itunes.tracks();',
   'var tracks = [];',
   'for (var i = 0; i < raw.length; i++) {',
-  '  var t = raw[i];',
-  '  tracks.push({',
-  '    id: t.persistentID(),',
-  '    name: t.name() || "",',
-  '    artist: t.artist() || "",',
-  '    albumArtist: t.albumArtist() || "",',
-  '    album: t.album() || "",',
-  '    track_number: t.trackNumber(),',
-  '    disc_number: t.discNumber(),',
-  '    duration: t.duration()',
-  '  });',
+  '  try {',
+  '    var t = raw[i];',
+  '    var kind = "";',
+  '    try { kind = t.mediaKind(); } catch(e) {}',
+  '    if (kind === "song" || kind === "" || kind === undefined) {',
+  '      var id = ""; try { id = t.persistentID(); } catch(e) {}',
+  '      if (!id) { continue; }',
+  '      tracks.push({',
+  '        id: id,',
+  '        name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(),',
+  '        artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(),',
+  '        albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(),',
+  '        album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(),',
+  '        track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(),',
+  '        disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(),',
+  '        duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })()',
+  '      });',
+  '    }',
+  '  } catch(e) {}',
   '}',
   'JSON.stringify(tracks);'
 ].join(' ');
@@ -307,6 +315,12 @@ function sendResponse(error, res) {
   } else {
     osa(getCurrentState, function(error, state) {
       if (error) {
+        var msg = (error.message || String(error));
+        if (msg.indexOf('-600') !== -1 || msg.indexOf("isn't running") !== -1) {
+          // Music.app not running — return stopped state rather than 500
+          console.log('Music.app not running (-600), returning stopped state');
+          return res.json({ player_state: 'stopped' });
+        }
         console.log(error);
         res.sendStatus(500);
       } else {
