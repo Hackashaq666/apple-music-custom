@@ -1,5 +1,5 @@
 """Apple Music media player entity."""
-from __future__ import annotations
+import asyncio
 
 import logging
 from collections import OrderedDict
@@ -62,10 +62,20 @@ async def async_setup_entry(
     entities: list[MediaPlayerEntity] = [AppleMusicPlayer(coordinator, entry)]
 
     # Discover AirPlay devices and add each as a separate media player
-    airplay_data = await coordinator.async_get("/airplay_devices")
+    # Retry a few times in case the server is still starting up
+    airplay_data = None
+    for attempt in range(3):
+        airplay_data = await coordinator.async_get("/airplay_devices")
+        if airplay_data and airplay_data.get("airplay_devices"):
+            break
+        await asyncio.sleep(2)
+
     if airplay_data:
         for device in airplay_data.get("airplay_devices", []):
+            _LOGGER.debug("Adding AirPlay entity: %s", device.get("name"))
             entities.append(AirPlaySpeaker(coordinator, entry, device))
+    else:
+        _LOGGER.warning("No AirPlay devices found during setup")
 
     async_add_entities(entities, update_before_add=True)
 

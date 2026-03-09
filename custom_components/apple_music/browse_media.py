@@ -1,269 +1,89 @@
-"""Media browser implementation for Apple Music."""
+"""Media browser for Apple Music."""
 from __future__ import annotations
-
-import logging
-import re
+import logging, re
 from urllib.parse import quote
-
 from homeassistant.components.media_player import BrowseMedia, MediaClass, MediaType
 from homeassistant.components.media_player.errors import BrowseError
 from homeassistant.helpers.network import is_internal_request
-
-from .const import (
-    BROWSE_ALBUMS,
-    BROWSE_ARTISTS,
-    BROWSE_PLAYLISTS,
-    BROWSE_ROOT,
-    BROWSE_SEP,
-)
+from .const import BROWSE_ALBUMS, BROWSE_ARTISTS, BROWSE_PLAYLISTS, BROWSE_ROOT, BROWSE_SEP
 
 _LOGGER = logging.getLogger(__name__)
 
+def slugify(s): return re.sub(r'^-|-$', '', re.sub(r'[^a-z0-9]+', '-', s.lower()))
+def parameterize(s): return slugify(s)
+def q(s): return quote(s, safe='')
 
-def slugify(s: str) -> str:
-    return re.sub(r'^-|-$', '', re.sub(r'[^a-z0-9]+', '-', s.lower()))
-
-
-def parameterize(s: str) -> str:
-    return slugify(s)
-
-
-# ── Content ID scheme ─────────────────────────────────────────────────────────
-#
-#   root                          → top-level menu
-#   playlists                     → list all playlists
-#   artists                       → list all artists
-#   albums                        → list all albums (paginated, first page)
-#   artist||<artist_id>           → albums by a specific artist
-#   album||<artist_id>||<album_id>→ tracks in a specific album
-#
-
-
-def _thumbnail(hass, base_url, direct_path, entity, media_type, content_id, image_id):
-    """Return direct URL for local requests, HA proxy URL for external."""
+def _thumb(hass, base_url, path, entity, mtype, cid, iid):
     if entity and is_internal_request(hass):
-        return f"{base_url}/{direct_path}"
-    return entity.get_browse_image_url(media_type, content_id, media_image_id=image_id) if entity else None
+        return f"{base_url}/{path}"
+    return entity.get_browse_image_url(mtype, cid, media_image_id=iid) if entity else None
 
+def _node(title, mc, mt, cid, play, expand, children=None, thumbnail=None):
+    return BrowseMedia(title=title, media_class=mc, media_content_type=mt,
+                       media_content_id=cid, can_play=play, can_expand=expand,
+                       children=children, thumbnail=thumbnail)
 
-async def async_browse_media(coordinator, media_content_type: str, media_content_id: str, entity=None) -> BrowseMedia:
-    """Return a BrowseMedia tree node for the given content id."""
+async def async_browse_media(coordinator, media_content_type, media_content_id, entity=None):
+    C, S = coordinator, BROWSE_SEP
+    hu, bu = coordinator.hass, coordinator.base_url
 
-    if media_content_id == BROWSE_ROOT or media_content_id is None:
-        return _build_root()
+    if not media_content_id or media_content_id == BROWSE_ROOT:
+        return _node("Apple Music", MediaClass.DIRECTORY, MediaType.MUSIC, BROWSE_ROOT, False, True, [
+            _node("Playlists", MediaClass.PLAYLIST, MediaType.PLAYLIST, BROWSE_PLAYLISTS, False, True),
+            _node("Artists",   MediaClass.ARTIST,   MediaType.ARTIST,   BROWSE_ARTISTS,   False, True),
+            _node("Albums",    MediaClass.ALBUM,     MediaType.ALBUM,    BROWSE_ALBUMS,    False, True),
+        ])
 
     if media_content_id == BROWSE_PLAYLISTS:
-        return await _browse_playlists(coordinator, entity)
+        data = await C.async_get("/playlists") or {}
+        kids = [_node(pl["name"], MediaClass.PLAYLIST, MediaType.PLAYLIST,
+                      f"playlist{S}{pl['id']}", True, False,
+                      thumbnail=_thumb(hu, bu, f"artwork/playlist/{q(pl['name'])}", entity,
+                                       MediaType.PLAYLIST, f"playlist{S}{parameterize(pl['name'])}",
+                                       f"artwork/playlist/{q(pl['name'])}"))
+                for pl in data.get("playlists", [])]
+        return _node("Playlists", MediaClass.DIRECTORY, MediaType.PLAYLIST, BROWSE_PLAYLISTS, False, True, kids)
 
     if media_content_id == BROWSE_ARTISTS:
-        return await _browse_artists(coordinator, entity)
+        data = await C.async_get("/library/artists?offset=0&limit=2000") or {}
+        kids = [_node(a["name"], MediaClass.ARTIST, MediaType.ARTIST,
+                      f"artist{S}{a['name']}", True, True,
+                      thumbnail=_thumb(hu, bu, f"artwork/artist/{q(a['name'])}", entity,
+                                       MediaType.ARTIST, f"artist{S}{a['id']}",
+                                       f"artwork/artist/{q(a['name'])}"))
+                for a in data.get("artists", [])]
+        return _node("Artists", MediaClass.DIRECTORY, MediaType.ARTIST, BROWSE_ARTISTS, False, True, kids)
 
     if media_content_id == BROWSE_ALBUMS:
-        return await _browse_albums(coordinator, entity)
+        data = await C.async_get("/library/albums?offset=0&limit=2000") or {}
+        kids = [_node(f"{al['name']} — {al['artist']}" if al.get("artist") else al["name"],
+                      MediaClass.ALBUM, MediaType.ALBUM,
+                      f"album{S}{al['artist']}{S}{al['name']}", True, True,
+                      thumbnail=_thumb(hu, bu, f"artwork/{q(al['artist'])}/{q(al['name'])}", entity,
+                                       MediaType.ALBUM, f"album{S}{slugify(al['artist'])}{S}{al['id']}",
+                                       f"artwork/{q(al['artist'])}/{q(al['name'])}"))
+                for al in data.get("albums", [])]
+        return _node("Albums", MediaClass.DIRECTORY, MediaType.ALBUM, BROWSE_ALBUMS, False, True, kids)
 
-    parts = media_content_id.split(BROWSE_SEP)
+    parts = media_content_id.split(S)
 
     if parts[0] == "artist" and len(parts) == 2:
-        return await _browse_artist_albums(coordinator, parts[1], entity)
+        data = await C.async_get(f"/library/artists/{q(parts[1])}/albums") or {}
+        an = data.get("artist", parts[1])
+        kids = [_node(al["name"], MediaClass.ALBUM, MediaType.ALBUM,
+                      f"album{S}{an}{S}{al['name']}", True, True,
+                      thumbnail=_thumb(hu, bu, f"artwork/{q(an)}/{q(al['name'])}", entity,
+                                       MediaType.ALBUM, f"album{S}{slugify(an)}{S}{al['id']}",
+                                       f"artwork/{q(an)}/{q(al['name'])}"))
+                for al in data.get("albums", [])]
+        return _node(an, MediaClass.ARTIST, MediaType.ARTIST, f"artist{S}{an}", False, True, kids)
 
     if parts[0] == "album" and len(parts) == 3:
-        return await _browse_album_tracks(coordinator, parts[1], parts[2])
+        data = await C.async_get(f"/library/albums/{q(parts[1])}/{q(parts[2])}/tracks") or {}
+        kids = [_node(t["name"], MediaClass.TRACK, MediaType.TRACK,
+                      f"track{S}{t['id']}", True, False)
+                for t in data.get("tracks", [])]
+        return _node(data.get("album", parts[2]), MediaClass.ALBUM, MediaType.ALBUM,
+                     f"album{S}{parts[1]}{S}{parts[2]}", False, True, kids)
 
     raise BrowseError(f"Unknown media_content_id: {media_content_id}")
-
-
-# ── Root ──────────────────────────────────────────────────────────────────────
-
-def _build_root() -> BrowseMedia:
-    return BrowseMedia(
-        title="Apple Music",
-        media_class=MediaClass.DIRECTORY,
-        media_content_type=MediaType.MUSIC,
-        media_content_id=BROWSE_ROOT,
-        can_play=False,
-        can_expand=True,
-        children=[
-            BrowseMedia(
-                title="Playlists",
-                media_class=MediaClass.PLAYLIST,
-                media_content_type=MediaType.PLAYLIST,
-                media_content_id=BROWSE_PLAYLISTS,
-                can_play=False,
-                can_expand=True,
-            ),
-            BrowseMedia(
-                title="Artists",
-                media_class=MediaClass.ARTIST,
-                media_content_type=MediaType.ARTIST,
-                media_content_id=BROWSE_ARTISTS,
-                can_play=False,
-                can_expand=True,
-            ),
-            BrowseMedia(
-                title="Albums",
-                media_class=MediaClass.ALBUM,
-                media_content_type=MediaType.ALBUM,
-                media_content_id=BROWSE_ALBUMS,
-                can_play=False,
-                can_expand=True,
-            ),
-        ],
-    )
-
-
-# ── Playlists ─────────────────────────────────────────────────────────────────
-
-async def _browse_playlists(coordinator, entity=None) -> BrowseMedia:
-    data = await coordinator.async_get("/playlists")
-    if not data:
-        raise BrowseError("Could not fetch playlists")
-
-    children = [
-        BrowseMedia(
-            title=pl["name"],
-            media_class=MediaClass.PLAYLIST,
-            media_content_type=MediaType.PLAYLIST,
-            media_content_id=f"playlist{BROWSE_SEP}{pl['id']}",
-            can_play=True,
-            can_expand=False,
-            thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/playlist/{quote(pl['name'], safe='')}", entity, MediaType.PLAYLIST, f"playlist{BROWSE_SEP}{parameterize(pl['name'])}", f"artwork/playlist/{quote(pl['name'], safe='')}"),
-        )
-        for pl in data.get("playlists", [])
-    ]
-
-    return BrowseMedia(
-        title="Playlists",
-        media_class=MediaClass.DIRECTORY,
-        media_content_type=MediaType.PLAYLIST,
-        media_content_id=BROWSE_PLAYLISTS,
-        can_play=False,
-        can_expand=True,
-        children=children,
-    )
-
-
-# ── Artists ───────────────────────────────────────────────────────────────────
-
-async def _browse_artists(coordinator, entity=None) -> BrowseMedia:
-    data = await coordinator.async_get("/library/artists?offset=0&limit=2000")
-    if not data:
-        raise BrowseError("Could not fetch artists")
-
-    children = [
-        BrowseMedia(
-            title=artist["name"],
-            media_class=MediaClass.ARTIST,
-            media_content_type=MediaType.ARTIST,
-            media_content_id=f"artist{BROWSE_SEP}{artist['name']}",
-            can_play=True,
-            can_expand=True,
-            thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/artist/{quote(artist['name'], safe='')}", entity, MediaType.ARTIST, f"artist{BROWSE_SEP}{artist['id']}", f"artwork/artist/{quote(artist['name'], safe='')}"),
-        )
-        for artist in data.get("artists", [])
-    ]
-
-    return BrowseMedia(
-        title="Artists",
-        media_class=MediaClass.DIRECTORY,
-        media_content_type=MediaType.ARTIST,
-        media_content_id=BROWSE_ARTISTS,
-        can_play=False,
-        can_expand=True,
-        children=children,
-    )
-
-
-# ── Albums (all) ──────────────────────────────────────────────────────────────
-
-async def _browse_albums(coordinator, entity=None) -> BrowseMedia:
-    data = await coordinator.async_get("/library/albums?offset=0&limit=2000")
-    if not data:
-        raise BrowseError("Could not fetch albums")
-
-    children = [
-        BrowseMedia(
-            title=f"{album['name']} — {album['artist']}" if album.get("artist") else album["name"],
-            media_class=MediaClass.ALBUM,
-            media_content_type=MediaType.ALBUM,
-            media_content_id=f"album{BROWSE_SEP}{album['artist']}{BROWSE_SEP}{album['name']}",
-            can_play=True,
-            can_expand=True,
-            thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/{quote(album['artist'], safe='')}/{quote(album['name'], safe='')}", entity, MediaType.ALBUM, f"album{BROWSE_SEP}{slugify(album['artist'])}{BROWSE_SEP}{album['id']}", f"artwork/{quote(album['artist'], safe='')}/{quote(album['name'], safe='')}"),
-        )
-        for album in data.get("albums", [])
-    ]
-
-    return BrowseMedia(
-        title="Albums",
-        media_class=MediaClass.DIRECTORY,
-        media_content_type=MediaType.ALBUM,
-        media_content_id=BROWSE_ALBUMS,
-        can_play=False,
-        can_expand=True,
-        children=children,
-    )
-
-
-# ── Albums by artist ──────────────────────────────────────────────────────────
-
-async def _browse_artist_albums(coordinator, artist_id: str, entity=None) -> BrowseMedia:
-    data = await coordinator.async_get(f"/library/artists/{quote(artist_id, safe='')}/albums")
-    if not data:
-        raise BrowseError(f"Could not fetch albums for artist {artist_id}")
-
-    artist_name = data.get("artist", artist_id)
-    children = [
-        BrowseMedia(
-            title=album["name"],
-            media_class=MediaClass.ALBUM,
-            media_content_type=MediaType.ALBUM,
-            media_content_id=f"album{BROWSE_SEP}{artist_name}{BROWSE_SEP}{album['name']}",
-            can_play=True,
-            can_expand=True,
-            thumbnail=_thumbnail(coordinator.hass, coordinator.base_url, f"artwork/{quote(artist_name, safe='')}/{quote(album['name'], safe='')}", entity, MediaType.ALBUM, f"album{BROWSE_SEP}{slugify(artist_name)}{BROWSE_SEP}{album['id']}", f"artwork/{quote(artist_name, safe='')}/{quote(album['name'], safe='')}"),
-        )
-        for album in data.get("albums", [])
-    ]
-
-    return BrowseMedia(
-        title=artist_name,
-        media_class=MediaClass.ARTIST,
-        media_content_type=MediaType.ARTIST,
-        media_content_id=f"artist{BROWSE_SEP}{artist_name}",
-        can_play=False,
-        can_expand=True,
-        children=children,
-    )
-
-
-# ── Tracks in album ───────────────────────────────────────────────────────────
-
-async def _browse_album_tracks(coordinator, artist_id: str, album_id: str) -> BrowseMedia:
-    data = await coordinator.async_get(
-        f"/library/albums/{quote(artist_id, safe='')}/{quote(album_id, safe='')}/tracks"
-    )
-    if not data:
-        raise BrowseError(f"Could not fetch tracks for album {album_id}")
-
-    album_name = data.get("album", album_id)
-    children = [
-        BrowseMedia(
-            title=track["name"],
-            media_class=MediaClass.TRACK,
-            media_content_type=MediaType.TRACK,
-            media_content_id=f"track{BROWSE_SEP}{track['id']}",
-            can_play=True,
-            can_expand=False,
-        )
-        for track in data.get("tracks", [])
-    ]
-
-    return BrowseMedia(
-        title=album_name,
-        media_class=MediaClass.ALBUM,
-        media_content_type=MediaType.ALBUM,
-        media_content_id=f"album{BROWSE_SEP}{artist_id}{BROWSE_SEP}{album_id}",
-        can_play=False,
-        can_expand=True,
-        children=children,
-    )
