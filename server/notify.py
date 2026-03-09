@@ -41,7 +41,7 @@ class MusicNotificationListener:
             "artist":        info.get("Artist", ""),
             "album":         info.get("Album", ""),
             "total_time":    info.get("Total Time", 0),
-            "persistent_id": str(info.get("PersistentID", "")),
+            "persistent_id": format(info.get("PersistentID", 0) & 0xFFFFFFFFFFFFFFFF, 'X'),
         }
 
         data = json.dumps(payload).encode("utf-8")

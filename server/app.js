@@ -7,7 +7,6 @@ var bodyParser = require('body-parser')
 var iTunes = require('local-itunes')
 var osa = require('osa')
 var osascript = require('osascript')
-var airplay = require('./lib/airplay')
 var parameterize = require('parameterize');
 
 var app = express()
@@ -217,6 +216,90 @@ function playTrackByID(persistentID) {
 
 // playAlbumByName and playArtistTracks are handled via AppleScript files
 
+
+function listAirPlayDevicesJXA() {
+  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
+  var airPlayDevices = itunes.airplayDevices();
+  var results = [];
+  for (var i = 0; i < airPlayDevices.length; i++) {
+    var d = airPlayDevices[i];
+    var deviceData = {};
+    if (d.networkAddress()) {
+      deviceData.id = d.networkAddress().replace(/:/g, '-');
+    } else {
+      deviceData.id = d.name();
+    }
+    deviceData.name           = d.name();
+    deviceData.kind           = d.kind();
+    deviceData.active         = d.active();
+    deviceData.selected       = d.selected();
+    deviceData.sound_volume   = d.soundVolume();
+    deviceData.supports_video = d.supportsVideo();
+    deviceData.supports_audio = d.supportsAudio();
+    deviceData.network_address = d.networkAddress();
+    results.push(deviceData);
+  }
+  return results;
+}
+
+function setAirPlaySelectionJXA(id, selected) {
+  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
+  var cleanId = id.replace(/-/g, ':');
+  var devices = itunes.airplayDevices();
+  for (var i = 0; i < devices.length; i++) {
+    var d = devices[i];
+    if (d.networkAddress() === cleanId || d.name() === id) {
+      d.selected = selected;
+      return true;
+    }
+  }
+  return false;
+}
+
+function setAirPlayVolumeJXA(id, level) {
+  try { itunes = Application('Music'); } catch(e) { itunes = Application('iTunes'); }
+  var cleanId = id.replace(/-/g, ':');
+  var devices = itunes.airplayDevices();
+  for (var i = 0; i < devices.length; i++) {
+    var d = devices[i];
+    if (d.networkAddress() === cleanId || d.name() === id) {
+      d.soundVolume = level;
+      return true;
+    }
+  }
+  return false;
+}
+
+function playByIDsTempScript(playlistName, ids, callback) {
+  var tmpFile = path.join(require('os').tmpdir(), 'play-ids-' + Date.now() + '.js');
+  var script = [
+    'var music;',
+    'try { music = Application("Music"); } catch(e) { music = Application("iTunes"); }',
+    'var playlistName = ' + JSON.stringify(playlistName) + ';',
+    'var persistentIDs = ' + JSON.stringify(ids) + ';',
+    'var playlists = music.userPlaylists();',
+    'for (var i = 0; i < playlists.length; i++) {',
+    '  if (playlists[i].name() === playlistName) { playlists[i].delete(); break; }',
+    '}',
+    'var tempPL = music.make({ new: "userPlaylist", withProperties: { name: playlistName } });',
+    'for (var j = 0; j < persistentIDs.length; j++) {',
+    '  try {',
+    '    var matches = music.tracks.whose({ persistentID: { "=": persistentIDs[j] } });',
+    '    if (matches.length > 0) { matches[0].duplicate({ to: tempPL }); }',
+    '  } catch(e) {}',
+    '}',
+    'music.play(tempPL);',
+  ].join('\n');
+  fs.writeFile(tmpFile, script, function(err) {
+    if (err) { return callback(err); }
+    execFile('osascript', ['-l', 'JavaScript', tmpFile], function(error, stdout, stderr) {
+      fs.unlink(tmpFile, function() {});
+      if (error) { return callback(error); }
+      callback(null);
+    });
+  });
+}
+
 function sendResponse(error, res) {
   if (error) {
     console.log(error);
@@ -247,6 +330,8 @@ function getPlaylists(callback) {
 }
 
 var libraryCache = { tracks: null, fetchedAt: 0, ttl: 60 * 60 * 1000, pending: [] };
+var albumsCache  = null;
+var artistsCache = null;
 
 // SSE clients and push state
 var sseClients = [];
@@ -288,6 +373,8 @@ function getLibraryTracks(callback) {
         var tracks = JSON.parse(stdout.trim());
         libraryCache.tracks    = tracks;
         libraryCache.fetchedAt = Date.now();
+        albumsCache  = null;
+        artistsCache = null;
         callbacks.forEach(function(cb) { cb(null, tracks); });
       } catch (e) {
         callbacks.forEach(function(cb) { cb(e); });
@@ -489,6 +576,19 @@ app.get('/artwork', function(req, res) {
 var ARTWORK_DIR = path.join(__dirname, 'artwork-cache');
 if (!fs.existsSync(ARTWORK_DIR)) { fs.mkdirSync(ARTWORK_DIR); }
 
+var CUSTOM_ARTWORK_DIR = path.join(__dirname, 'custom-artwork');
+if (!fs.existsSync(CUSTOM_ARTWORK_DIR)) { fs.mkdirSync(CUSTOM_ARTWORK_DIR); }
+
+function customArtworkPath(name) {
+  var slug = slugify(name);
+  var exts = ['.jpg', '.jpeg', '.png'];
+  for (var i = 0; i < exts.length; i++) {
+    var p = path.join(CUSTOM_ARTWORK_DIR, slug + exts[i]);
+    if (fs.existsSync(p)) { return p; }
+  }
+  return null;
+}
+
 function artworkFilePath(artist, album) {
   return path.join(ARTWORK_DIR, slugify(artist + '||' + album) + '.jpg');
 }
@@ -555,6 +655,11 @@ function prefetchAllArtwork(tracks) {
 
 app.get('/artwork/playlist/:name', function(req, res) {
   var name = req.params.name;
+  var custom = customArtworkPath(name);
+  if (custom) {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(path.resolve(custom));
+  }
   buildPlaylistCollage(name, function(error, filePath) {
     if (error) {
       console.log('Playlist artwork error:', error.message);
@@ -568,6 +673,11 @@ app.get('/artwork/playlist/:name', function(req, res) {
 
 app.get('/artwork/artist/:artist', function(req, res) {
   var artist = req.params.artist;
+  var custom = customArtworkPath(artist);
+  if (custom) {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(path.resolve(custom));
+  }
   var cacheFile = path.join(ARTWORK_DIR, 'artist-' + slugify(artist) + '.jpg');
 
   if (fs.existsSync(cacheFile)) {
@@ -601,6 +711,11 @@ app.get('/artwork/artist/:artist', function(req, res) {
 app.get('/artwork/:artist/:album', function(req, res) {
   var artist   = req.params.artist;
   var album    = req.params.album;
+  var custom   = customArtworkPath(album);
+  if (custom) {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(path.resolve(custom));
+  }
   var filePath = artworkFilePath(artist, album);
 
   if (fs.existsSync(filePath)) {
@@ -731,12 +846,32 @@ function buildPlaylistCollage(playlistName, callback) {
 }
 
 
+app.get('/debug/artwork-slugs', function(req, res) {
+  var script = path.join(__dirname, 'lib', 'get-playlists.applescript');
+  execFile('osascript', [script], function(error, stdout) {
+    if (error) { return res.sendStatus(500); }
+    var result = [];
+    var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var tab = line.indexOf('\t');
+      if (tab === -1) { continue; }
+      var name = line.substring(tab + 1).trim();
+      var slug = slugify(name);
+      var custom = customArtworkPath(name);
+      result.push({ name: name, slug: slug, filename: slug + '.jpg', custom_found: !!custom });
+    }
+    res.json(result);
+  });
+});
+
 app.get('/playlists', function(req, res) {
   var script = path.join(__dirname, 'lib', 'get-playlists.applescript');
   execFile('osascript', [script], function(error, stdout) {
     if (error) { console.log('get-playlists error:', error); return res.sendStatus(500); }
     var playlists = [];
-    var lines = (stdout || '').trim().split('\n');
+    var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim();
       if (!line) { continue; }
@@ -751,19 +886,11 @@ app.get('/playlists', function(req, res) {
 });
 
 app.put('/playlists/:id/play', function(req, res) {
-  osa(getPlaylistsFromItunes, function(error, data) {
-    if (error) { return res.sendStatus(500); }
-    for (var i = 0; i < data.length; i++) {
-      playlist = data[i];
-      // Match by numeric id OR by parameterized name (legacy)
-      if (req.params.id == playlist['id'] || req.params.id == parameterize(playlist['name'])) {
-        osa(playPlaylist, playlist['id'], function(error, data) {
-          sendResponse(error, res);
-        });
-        return;
-      }
-    }
-    res.sendStatus(404);
+  var script = path.join(__dirname, 'lib', 'play-playlist.applescript');
+  execFile('osascript', [script, req.params.id], function(error, stdout) {
+    if (error) { console.log('play-playlist error:', error); return res.sendStatus(500); }
+    if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
+    sendResponse(null, res);
   });
 });
 
@@ -772,8 +899,11 @@ app.get('/library/artists', function(req, res) {
   var offset = parseInt(req.query.offset) || 0;
   var limit  = parseInt(req.query.limit)  || 100;
   getLibraryTracks(function(error, tracks) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json(buildArtists(tracks, offset, limit)); }
+    if (error) { console.log(error); return res.sendStatus(500); }
+    if (!artistsCache) { artistsCache = buildArtists(tracks, 0, 999999); }
+    var result = { total: artistsCache.total, offset: offset, limit: limit,
+                   artists: artistsCache.artists.slice(offset, offset + limit) };
+    res.json(result);
   });
 });
 
@@ -819,8 +949,11 @@ app.get('/library/albums', function(req, res) {
   var offset = parseInt(req.query.offset) || 0;
   var limit  = parseInt(req.query.limit)  || 50;
   getLibraryTracks(function(error, tracks) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json(buildAlbums(tracks, offset, limit)); }
+    if (error) { console.log(error); return res.sendStatus(500); }
+    if (!albumsCache) { albumsCache = buildAlbums(tracks, 0, 999999); }
+    var result = { total: albumsCache.total, offset: offset, limit: limit,
+                   albums: albumsCache.albums.slice(offset, offset + limit) };
+    res.json(result);
   });
 });
 
@@ -866,21 +999,43 @@ app.put('/library/tracks/:id/play', function(req, res) {
 app.put('/library/albums/:artist/:album/play', function(req, res) {
   var artist = req.params.artist;
   var album  = req.params.album;
-  var script = path.join(__dirname, 'lib', 'play-album.applescript');
-  execFile('osascript', [script, artist, album], function(error, stdout) {
-    if (error) { console.log('play-album error:', error); return res.sendStatus(500); }
-    if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
-    sendResponse(null, res);
+  getLibraryTracks(function(error, tracks) {
+    if (error) { return res.sendStatus(500); }
+    var ids = tracks
+      .filter(function(t) { return t.album === album && (t.albumArtist || t.artist || '') === artist; })
+      .sort(function(a, b) {
+        var ka = (a.disc_number || 1) * 10000 + (a.track_number || 0);
+        var kb = (b.disc_number || 1) * 10000 + (b.track_number || 0);
+        return ka - kb;
+      })
+      .map(function(t) { return t.id; });
+    if (ids.length === 0) { return res.sendStatus(404); }
+    playByIDsTempScript('HA_Play_Album', ids, function(error) {
+      if (error) { console.log('play-album error:', error); return res.sendStatus(500); }
+      sendResponse(null, res);
+    });
   });
 });
 
 app.put('/library/artists/:artist/play', function(req, res) {
   var artist = req.params.artist;
-  var script = path.join(__dirname, 'lib', 'play-artist.applescript');
-  execFile('osascript', [script, artist], function(error, stdout) {
-    if (error) { console.log('play-artist error:', error); return res.sendStatus(500); }
-    if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
-    sendResponse(null, res);
+  getLibraryTracks(function(error, tracks) {
+    if (error) { return res.sendStatus(500); }
+    var ids = tracks
+      .filter(function(t) { return (t.albumArtist || t.artist || '') === artist; })
+      .sort(function(a, b) {
+        if (a.album < b.album) { return -1; }
+        if (a.album > b.album) { return 1; }
+        var ka = (a.disc_number || 1) * 10000 + (a.track_number || 0);
+        var kb = (b.disc_number || 1) * 10000 + (b.track_number || 0);
+        return ka - kb;
+      })
+      .map(function(t) { return t.id; });
+    if (ids.length === 0) { return res.sendStatus(404); }
+    playByIDsTempScript('HA_Play_Artist', ids, function(error) {
+      if (error) { console.log('play-artist error:', error); return res.sendStatus(500); }
+      sendResponse(null, res);
+    });
   });
 });
 
@@ -902,46 +1057,74 @@ app.get('/library/search', function(req, res) {
 });
 
 
+function parseAirPlayDevices(stdout) {
+  var devices = [];
+  var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split('\t');
+    if (parts.length < 6) { continue; }
+    // columns: id, name, kind, active, selected, volume, audio, video, addr
+    var rawId = parts[0].trim();
+    var addr  = parts[8] ? parts[8].trim() : '';
+    devices.push({
+      id:              addr ? addr.replace(/:/g, '-') : rawId,
+      name:            parts[1].trim(),
+      kind:            parts[2].trim(),
+      active:          parts[3].trim() === 'true',
+      selected:        parts[4].trim() === 'true',
+      sound_volume:    parseInt(parts[5].trim()) || 0,
+      supports_audio:  parts[6].trim() === 'true',
+      supports_video:  parts[7].trim() === 'true',
+      network_address: addr
+    });
+  }
+  return devices;
+}
+
 app.get('/airplay_devices', function(req, res) {
-  osa(airplay.listAirPlayDevices, function(error, data, log) {
-    if (error) { res.sendStatus(500); }
-    else { res.json({ airplay_devices: data }); }
+  osa(listAirPlayDevicesJXA, function(error, devices) {
+    if (error) { console.log('airplay list error:', error); return res.sendStatus(500); }
+    res.json({ airplay_devices: devices || [] });
   });
 });
 
 app.get('/airplay_devices/:id', function(req, res) {
-  osa(airplay.listAirPlayDevices, function(error, data, log) {
+  osa(listAirPlayDevicesJXA, function(error, devices) {
     if (error) { return res.sendStatus(500); }
-    for (var i = 0; i < data.length; i++) {
-      device = data[i];
-      if (req.params.id == device['id']) {
-        res.json(device);
-        return;
-      }
+    for (var i = 0; i < devices.length; i++) {
+      if (devices[i].id === req.params.id) { return res.json(devices[i]); }
     }
     res.sendStatus(404);
   });
 });
 
 app.put('/airplay_devices/:id/on', function(req, res) {
-  osa(airplay.setSelectionStateAirPlayDevice, req.params.id, true, function(error, data, log) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json(data); }
+  osa(setAirPlaySelectionJXA, req.params.id, true, function(error) {
+    if (error) { console.log('airplay-on error:', error); return res.sendStatus(500); }
+    sendResponse(null, res);
   });
 });
 
 app.put('/airplay_devices/:id/off', function(req, res) {
-  osa(airplay.setSelectionStateAirPlayDevice, req.params.id, false, function(error, data, log) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json(data); }
+  osa(setAirPlaySelectionJXA, req.params.id, false, function(error) {
+    if (error) { console.log('airplay-off error:', error); return res.sendStatus(500); }
+    sendResponse(null, res);
   });
 });
 
 app.put('/airplay_devices/:id/volume', function(req, res) {
-  osa(airplay.setVolumeAirPlayDevice, req.params.id, req.body.level, function(error, data, log) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json(data); }
+  osa(setAirPlayVolumeJXA, req.params.id, parseInt(req.body.level), function(error) {
+    if (error) { console.log('airplay-volume error:', error); return res.sendStatus(500); }
+    sendResponse(null, res);
   });
+});
+
+process.on('uncaughtException', function(err) {
+  console.error('[uncaughtException] Server kept alive:', err.message || err);
+});
+
+process.on('unhandledRejection', function(reason) {
+  console.error('[unhandledRejection] Server kept alive:', reason);
 });
 
 app.listen(process.env.PORT || 8181);
@@ -951,6 +1134,9 @@ getLibraryTracks(function(error, tracks) {
     console.log('Library cache warm failed:', error.message || error);
   } else {
     console.log('Library cache warmed: ' + tracks.length + ' tracks loaded.');
+    albumsCache  = buildAlbums(tracks, 0, 999999);
+    artistsCache = buildArtists(tracks, 0, 999999);
+    console.log('Albums/artists cache built: ' + albumsCache.total + ' albums, ' + artistsCache.total + ' artists.');
     prefetchAllArtwork(tracks);
   }
 });
@@ -961,6 +1147,8 @@ setInterval(function() {
     if (error) {
       console.log('Library cache refresh failed:', error.message || error);
     } else {
+      albumsCache  = buildAlbums(tracks, 0, 999999);
+      artistsCache = buildArtists(tracks, 0, 999999);
       console.log('Library cache refreshed: ' + tracks.length + ' tracks.');
     }
   });
