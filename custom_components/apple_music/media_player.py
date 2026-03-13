@@ -257,7 +257,9 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         self, media_type: str, media_id: str, **kwargs
     ) -> None:
         """Play media from the browser or directly by ID."""
-        parts = media_id.split(BROWSE_SEP)
+        # Accept both || (internal) and / (user-friendly) as separator
+        import re
+        parts = re.split(r'\|\|+|/', media_id)
 
         if parts[0] == "artist" and len(parts) == 2:
             from urllib.parse import quote as urlquote
