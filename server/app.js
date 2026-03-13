@@ -900,11 +900,38 @@ app.get('/playlists', function(req, res) {
 });
 
 app.put('/playlists/:id/play', function(req, res) {
-  var script = path.join(__dirname, 'lib', 'play-playlist.applescript');
-  execFile('osascript', [script, req.params.id], function(error, stdout) {
-    if (error) { console.log('play-playlist error:', error); return res.sendStatus(500); }
-    if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
-    sendResponse(null, res);
+  var idOrSlug = req.params.id;
+  // If numeric, play directly
+  if (/^\d+$/.test(idOrSlug)) {
+    var script = path.join(__dirname, 'lib', 'play-playlist.applescript');
+    return execFile('osascript', [script, idOrSlug], function(error, stdout) {
+      if (error) { console.log('play-playlist error:', error); return res.sendStatus(500); }
+      if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
+      sendResponse(null, res);
+    });
+  }
+  // Otherwise look up by slug/name
+  var listScript = path.join(__dirname, 'lib', 'get-playlists.applescript');
+  execFile('osascript', [listScript], function(error, stdout) {
+    if (error) { return res.sendStatus(500); }
+    var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
+    var matchId = null;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var tab = line.indexOf('	');
+      if (tab === -1) { continue; }
+      var pid  = line.substring(0, tab).trim();
+      var name = line.substring(tab + 1).trim();
+      if (slugify(name) === idOrSlug || name === idOrSlug) { matchId = pid; break; }
+    }
+    if (!matchId) { return res.sendStatus(404); }
+    var script = path.join(__dirname, 'lib', 'play-playlist.applescript');
+    execFile('osascript', [script, matchId], function(error, stdout) {
+      if (error) { console.log('play-playlist error:', error); return res.sendStatus(500); }
+      if ((stdout || '').trim() === 'notfound') { return res.sendStatus(404); }
+      sendResponse(null, res);
+    });
   });
 });
 
