@@ -42,6 +42,8 @@ State updates use **Server-Sent Events (SSE)** driven by macOS distributed notif
 - Native HA media browser — browse and play Playlists, Artists, Albums, and Tracks
 - **Instant track change and play/pause updates** via macOS distributed notifications and SSE
 - Config flow UI setup — no YAML required
+- Custom artwork for playlists, artists, and albums via `custom-artwork/` folder
+- Trigger playlists by name or slug from automations
 
 ---
 
@@ -207,6 +209,71 @@ Track changes and play/pause reflect in HA in under a second. Playback position 
 - AirPlay device state and playback position sync every 30 seconds when SSE is connected, every 5 seconds when SSE is disconnected
 - The library cache refreshes every 30 minutes and stays valid for 60 minutes
 - Album art is served from the local Mac and is not externally accessible
+
+---
+
+## Custom Artwork
+
+You can override artwork for any playlist (including Apple curated playlists and radio stations) by dropping image files into `~/apple-music-custom/server/custom-artwork/`.
+
+Files must be named using the playlist slug — lowercase, hyphens instead of spaces and special characters. For example:
+
+| Playlist | Filename |
+|---|---|
+| Classic Rock Essentials | `classic-rock-essentials.jpg` |
+| '80s Rock Essentials | `80s-rock-essentials.jpg` |
+| Radio Paradise | `radio-paradise.jpg` |
+| WMMR | `wmmr.jpg` |
+
+Supported formats: `.jpg`, `.jpeg`, `.png`
+
+Custom artwork takes priority over the auto-generated collage. To find the exact slug for any playlist, hit:
+
+```
+http://<mac-ip>:8181/debug/artwork-slugs
+```
+
+This returns all playlists with their slug, expected filename, and whether a custom file was found.
+
+Custom artwork also works for artists and albums using the same slug naming convention.
+
+---
+
+## Automations
+
+### Play a playlist by name
+
+Use the playlist slug or exact name as the `media_content_id`:
+
+```yaml
+action: media_player.play_media
+target:
+  entity_id: media_player.apple_music
+data:
+  media_content_type: playlist
+  media_content_id: "playlist/classic-rock-essentials"
+```
+
+Or by numeric ID (visible at `http://<mac-ip>:8181/playlists`):
+
+```yaml
+action: media_player.play_media
+target:
+  entity_id: media_player.apple_music
+data:
+  media_content_type: playlist
+  media_content_id: "playlist/47424"
+```
+
+### Set shuffle
+
+```yaml
+action: media_player.shuffle_set
+target:
+  entity_id: media_player.apple_music
+data:
+  shuffle: true
+```
 
 ---
 
