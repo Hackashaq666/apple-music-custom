@@ -292,7 +292,7 @@ data:
 
 **Artwork not loading in media browser**
 - The artwork disk cache warms automatically on server startup at 500ms per album. Check progress with: `ls ~/apple-music-custom/server/artwork-cache/ | wc -l`
-- Check server logs: `tail -f ~/apple-music-custom/server/log/apple-music-api.log`
+- Check server logs: `tail -f ~/apple-music-custom/server/log/output.log`
 
 **AirPlay devices not appearing**
 - Reload the integration: Settings → Integrations → Apple Music → Reload
