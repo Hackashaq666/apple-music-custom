@@ -1,6 +1,5 @@
 var fs = require('fs')
 var path = require('path')
-var util = require('util')
 var express = require('express')
 var morgan = require('morgan')
 var bodyParser = require('body-parser')
@@ -19,18 +18,19 @@ app.use(morgan(logFormat))
 
 
 function getCurrentState() {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (error) {
     itunes = Application('iTunes');
   }
 
-  playerState = itunes.playerState();
-  currentState = {};
+  var playerState = itunes.playerState();
+  var currentState = {};
   currentState['player_state'] = playerState;
 
   if (playerState != 'stopped') {
-    currentTrack = itunes.currentTrack;
+    var currentTrack = itunes.currentTrack;
 
     currentState['id']                 = currentTrack.persistentID();
     currentState['name']               = currentTrack.name();
@@ -59,6 +59,7 @@ function getCurrentState() {
 }
 
 function seekToPosition(position) {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (error) {
@@ -69,6 +70,7 @@ function seekToPosition(position) {
 }
 
 function setVolume(level) {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (error) {
@@ -82,6 +84,7 @@ function setVolume(level) {
 }
 
 function setMuted(muted) {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (error) {
@@ -95,6 +98,7 @@ function setMuted(muted) {
 }
 
 function setShuffle(mode) {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (error) {
@@ -112,6 +116,7 @@ function setShuffle(mode) {
 }
 
 function setRepeat(mode) {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (error) {
@@ -127,47 +132,12 @@ function setRepeat(mode) {
   }
 }
 
-function getPlaylistsFromItunes() {
-  try {
-    itunes = Application('Music');
-  } catch (error) {
-    itunes = Application('iTunes');
-  }
-  var HA_TEMP = ['HA_Play_Album', 'HA_Play_Artist'];
-  playlists = itunes.playlists();
-  playlistNames = [];
-  for (var i = 0; i < playlists.length; i++) {
-    try {
-      playlist = playlists[i];
-      var name = playlist.name();
-      if (HA_TEMP.indexOf(name) !== -1) { continue; }
-      data = {};
-      data['id']   = playlist.id();
-      data['name'] = name;
-      playlistNames.push(data);
-    } catch(e) { continue; }
-  }
-  return playlistNames;
-}
 
-function playPlaylist(nameOrId) {
-  try {
-    itunes = Application('Music');
-  } catch (error) {
-    itunes = Application('iTunes');
-  }
-  if ((nameOrId - 0) == nameOrId && ('' + nameOrId).trim().length > 0) {
-    id = parseInt(nameOrId);
-    itunes.playlists.byId(id).play();
-  } else {
-    itunes.playlists.byName(nameOrId).play();
-  }
-  return true;
-}
 
 
 var execFile = require('child_process').execFile;
 var sharp   = require('sharp');
+var os      = require('os');
 
 var FETCH_TRACKS_SCRIPT = [
   'try { itunes = Application("Music"); } catch(e) { itunes = Application("iTunes"); }',
@@ -204,18 +174,16 @@ var FETCH_TRACKS_SCRIPT = [
 
 
 function playTrackByID(persistentID) {
+  var itunes;
   try {
     itunes = Application('Music');
   } catch (e) {
     itunes = Application('iTunes');
   }
-  var allTracks = itunes.tracks();
-  for (var i = 0; i < allTracks.length; i++) {
-    if (allTracks[i].persistentID() === persistentID) {
-      allTracks[i].play();
-      return true;
-    }
-  }
+  try {
+    var matches = itunes.tracks.whose({ persistentID: { '=': persistentID } });
+    if (matches.length > 0) { matches[0].play(); return true; }
+  } catch(e) {}
   return false;
 }
 
@@ -279,7 +247,7 @@ function setAirPlayVolumeJXA(id, level) {
 }
 
 function playByIDsTempScript(playlistName, ids, callback) {
-  var tmpFile = path.join(require('os').tmpdir(), 'play-ids-' + Date.now() + '.js');
+  var tmpFile = path.join(os.tmpdir(), 'play-ids-' + Date.now() + '.js');
   var script = [
     'var music;',
     'try { music = Application("Music"); } catch(e) { music = Application("iTunes"); }',
@@ -330,18 +298,6 @@ function sendResponse(error, res) {
   }
 }
 
-function getPlaylists(callback) {
-  osa(getPlaylistsFromItunes, function(error, data) {
-    if (error) {
-      callback(error);
-    } else {
-      for (var i = 0; i < data.length; i++) {
-        data[i]['id'] = parameterize(data[i]['name']);
-      }
-      callback(null, data);
-    }
-  });
-}
 
 var libraryCache = { tracks: null, fetchedAt: 0, ttl: 60 * 60 * 1000, pending: [] };
 var albumsCache  = null;
@@ -950,8 +906,8 @@ app.get('/library/artists', function(req, res) {
 
 app.get('/library/artists/:artist/albums', function(req, res) {
   getLibraryTracks(function(error, tracks) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else { res.json(buildAlbumsByArtist(tracks, req.params.artist)); }
+    if (error) { console.log(error); return res.sendStatus(500); }
+    res.json(buildAlbumsByArtist(tracks, req.params.artist));
   });
 });
 
@@ -1098,29 +1054,6 @@ app.get('/library/search', function(req, res) {
 });
 
 
-function parseAirPlayDevices(stdout) {
-  var devices = [];
-  var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
-  for (var i = 0; i < lines.length; i++) {
-    var parts = lines[i].trim().split('\t');
-    if (parts.length < 6) { continue; }
-    // columns: id, name, kind, active, selected, volume, audio, video, addr
-    var rawId = parts[0].trim();
-    var addr  = parts[8] ? parts[8].trim() : '';
-    devices.push({
-      id:              addr ? addr.replace(/:/g, '-') : rawId,
-      name:            parts[1].trim(),
-      kind:            parts[2].trim(),
-      active:          parts[3].trim() === 'true',
-      selected:        parts[4].trim() === 'true',
-      sound_volume:    parseInt(parts[5].trim()) || 0,
-      supports_audio:  parts[6].trim() === 'true',
-      supports_video:  parts[7].trim() === 'true',
-      network_address: addr
-    });
-  }
-  return devices;
-}
 
 app.get('/airplay_devices', function(req, res) {
   osa(listAirPlayDevicesJXA, function(error, devices) {
