@@ -635,11 +635,10 @@ function prefetchAllPlaylistCollages(callback) {
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i].trim();
       if (!line) { continue; }
-      var tab = line.indexOf('	');
+      var tab = line.indexOf('\t');
       if (tab === -1) { continue; }
       var name = line.substring(tab + 1).trim();
       if (!name) { continue; }
-      // Skip if custom artwork or collage already cached
       if (customArtworkPath(name)) { continue; }
       var cacheFile = path.join(ARTWORK_DIR, 'playlist-' + slugify(name) + '.jpg');
       if (!fs.existsSync(cacheFile)) { queue.push(name); }
@@ -653,15 +652,58 @@ function prefetchAllPlaylistCollages(callback) {
         return;
       }
       var name = queue[idx++];
-      buildPlaylistCollage(name, function(err) {
-        if (err) { console.log('Playlist collage skip (' + name + '):', err.message); }
-        setTimeout(next, 100);
+      // Ensure first 4 playlist track artworks are cached before building collage
+      getPlaylistTracks(name, function(tracks) {
+        if (!tracks || tracks.length === 0) {
+          buildPlaylistCollage(name, function(err) {
+            if (err) { console.log('Playlist collage skip (' + name + '):', err.message); }
+            setTimeout(next, 100);
+          });
+          return;
+        }
+        var seen = {};
+        var missing = [];
+        for (var i = 0; i < tracks.length; i++) {
+          if (missing.length >= 4 && Object.keys(seen).length >= 4) { break; }
+          var t      = tracks[i];
+          var artist = t.artist || '';
+          var album  = t.album  || '';
+          if (!artist || !album) { continue; }
+          var key = artist + '||' + album;
+          if (seen[key]) { continue; }
+          seen[key] = true;
+          if (!fs.existsSync(artworkFilePath(artist, album))) {
+            missing.push({ artist: artist, album: album });
+          }
+          if (Object.keys(seen).length >= 4) { break; }
+        }
+        if (missing.length === 0) {
+          buildPlaylistCollage(name, function(err) {
+            if (err) { console.log('Playlist collage skip (' + name + '):', err.message); }
+            setTimeout(next, 100);
+          });
+          return;
+        }
+        var midx = 0;
+        function fetchNext() {
+          if (midx >= missing.length) {
+            buildPlaylistCollage(name, function(err) {
+              if (err) { console.log('Playlist collage skip (' + name + '):', err.message); }
+              setTimeout(next, 100);
+            });
+            return;
+          }
+          var item = missing[midx++];
+          fetchAndSaveArtwork(item.artist, item.album, function() {
+            setTimeout(fetchNext, 500);
+          });
+        }
+        fetchNext();
       });
     }
     next();
   });
 }
-
 function prefetchAllArtistArtwork(tracks, callback) {
   var seen = {};
   var queue = [];
