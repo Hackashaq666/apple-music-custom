@@ -124,8 +124,10 @@ class AppleMusicCoordinator(DataUpdateCoordinator):
 
             except asyncio.CancelledError:
                 break
-            except Exception as err:
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
                 _LOGGER.debug("Apple Music SSE disconnected: %s — retrying in %ds", err, SSE_RECONNECT_DELAY)
+            except Exception as err:
+                _LOGGER.warning("Apple Music SSE unexpected error: %s — retrying in %ds", err, SSE_RECONNECT_DELAY)
 
             self._sse_connected = False
             self.update_interval = timedelta(seconds=POLL_INTERVAL_FALLBACK)

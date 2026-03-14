@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Apple Music media player entity."""
 import asyncio
 
@@ -16,6 +17,9 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+import re
+from urllib.parse import quote as urlquote
 
 from . import AppleMusicCoordinator
 from .browse_media import async_browse_media
@@ -200,17 +204,23 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
 
     # ── Commands ──────────────────────────────────────────────────────────────
 
+    def _optimistic_state(self, player_state: str) -> None:
+        """Optimistically update player_state so the UI reflects instantly."""
+        current = dict(self.coordinator.data or {})
+        current["player_state"] = player_state
+        self.coordinator.async_set_updated_data(current)
+
     async def async_media_play(self) -> None:
+        self._optimistic_state("playing")
         await self.coordinator.async_send_command("PUT", "/play")
-        await self.coordinator.async_request_refresh()
 
     async def async_media_pause(self) -> None:
+        self._optimistic_state("paused")
         await self.coordinator.async_send_command("PUT", "/pause")
-        await self.coordinator.async_request_refresh()
 
     async def async_media_stop(self) -> None:
+        self._optimistic_state("stopped")
         await self.coordinator.async_send_command("PUT", "/stop")
-        await self.coordinator.async_request_refresh()
 
     async def async_media_next_track(self) -> None:
         await self.coordinator.async_send_command("PUT", "/next")
@@ -258,11 +268,9 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
     ) -> None:
         """Play media from the browser or directly by ID."""
         # Accept both || (internal) and / (user-friendly) as separator
-        import re
         parts = re.split(r'\|\|+|/', media_id)
 
         if parts[0] == "artist" and len(parts) == 2:
-            from urllib.parse import quote as urlquote
             artist_id = parts[1]
             _LOGGER.debug("Playing artist: %s", artist_id)
             await self.coordinator.async_send_command(
@@ -274,8 +282,9 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             await self.coordinator.async_send_command(
                 "PUT", f"/playlists/{parts[1]}/play"
             )
+            await self.coordinator.async_request_refresh()
+            return
         elif parts[0] == "album" and len(parts) == 3:
-            from urllib.parse import quote as urlquote
             artist_id = parts[1]
             album_id  = parts[2]
             _LOGGER.debug("Playing album: %s / %s", artist_id, album_id)
@@ -304,8 +313,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         else:
             _LOGGER.warning("Unrecognised media_id for play_media: %s", media_id)
             return
-
-        await self.coordinator.async_request_refresh()
 
     async def async_get_browse_image(
         self,
@@ -457,3 +464,4 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
             f"/airplay_devices/{self._device_id}/volume",
             data={"level": level},
         )
+        await self.coordinator.async_request_refresh()
