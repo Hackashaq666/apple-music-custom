@@ -609,6 +609,9 @@ function prefetchAllArtwork(tracks) {
   function next() {
     if (idx >= queue.length) {
       console.log('Artwork prefetch complete.');
+      prefetchAllArtistArtwork(libraryCache.tracks || [], function() {
+        prefetchAllPlaylistCollages(null);
+      });
       return;
     }
     var item = queue[idx++];
@@ -620,6 +623,76 @@ function prefetchAllArtwork(tracks) {
     });
   }
 
+  next();
+}
+
+function prefetchAllPlaylistCollages(callback) {
+  var script = path.join(__dirname, 'lib', 'get-playlists.applescript');
+  execFile('osascript', [script], function(error, stdout) {
+    if (error) { if (callback) callback(); return; }
+    var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
+    var queue = [];
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var tab = line.indexOf('	');
+      if (tab === -1) { continue; }
+      var name = line.substring(tab + 1).trim();
+      if (!name) { continue; }
+      // Skip if custom artwork or collage already cached
+      if (customArtworkPath(name)) { continue; }
+      var cacheFile = path.join(ARTWORK_DIR, 'playlist-' + slugify(name) + '.jpg');
+      if (!fs.existsSync(cacheFile)) { queue.push(name); }
+    }
+    console.log('Playlist collage prefetch: ' + queue.length + ' to build.');
+    var idx = 0;
+    function next() {
+      if (idx >= queue.length) {
+        console.log('Playlist collage prefetch complete.');
+        if (callback) callback();
+        return;
+      }
+      var name = queue[idx++];
+      buildPlaylistCollage(name, function(err) {
+        if (err) { console.log('Playlist collage skip (' + name + '):', err.message); }
+        setTimeout(next, 100);
+      });
+    }
+    next();
+  });
+}
+
+function prefetchAllArtistArtwork(tracks, callback) {
+  var seen = {};
+  var queue = [];
+  for (var i = 0; i < tracks.length; i++) {
+    var t      = tracks[i];
+    var artist = t.albumArtist || t.artist || '';
+    var album  = t.album || '';
+    if (!artist || !album) { continue; }
+    if (seen[artist]) { continue; }
+    if (customArtworkPath(artist)) { seen[artist] = true; continue; }
+    var cacheFile = path.join(ARTWORK_DIR, 'artist-' + slugify(artist) + '.jpg');
+    if (fs.existsSync(cacheFile)) { seen[artist] = true; continue; }
+    var albumFile = artworkFilePath(artist, album);
+    if (!fs.existsSync(albumFile)) { continue; }
+    seen[artist] = true;
+    queue.push({ artist: artist, albumFile: albumFile, cacheFile: cacheFile });
+  }
+  console.log('Artist artwork prefetch: ' + queue.length + ' artists to cache.');
+  var idx = 0;
+  function next() {
+    if (idx >= queue.length) {
+      console.log('Artist artwork prefetch complete.');
+      if (callback) { callback(); }
+      return;
+    }
+    var item = queue[idx++];
+    fs.copyFile(item.albumFile, item.cacheFile, function(err) {
+      if (err) { console.log('Artist artwork copy error (' + item.artist + '):', err.message); }
+      next();
+    });
+  }
   next();
 }
 
