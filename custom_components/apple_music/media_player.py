@@ -427,6 +427,26 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
     def volume_step(self) -> float:
         return 0.01
 
+    @property
+    def media_image_url(self) -> str | None:
+        state = self.coordinator.data or {}
+        if state.get("player_state") != "stopped":
+            track_id = state.get("id", "")
+            return f"{self.coordinator.base_url}/artwork?track={track_id}"
+        return None
+
+    @property
+    def media_image_remotely_accessible(self) -> bool:
+        return False
+
+    @property
+    def media_title(self) -> str | None:
+        return (self.coordinator.data or {}).get("name")
+
+    @property
+    def media_artist(self) -> str | None:
+        return (self.coordinator.data or {}).get("artist")
+
     async def async_turn_on(self) -> None:
         devices = getattr(self.coordinator, "_airplay_devices", {})
         if self._device_id in devices:
