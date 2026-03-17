@@ -571,7 +571,7 @@ function fetchAndSaveArtwork(artist, album, callback) {
   execFile(
     'osascript',
     [scriptFile, artist, album, tmpFile],
-    { maxBuffer: 1 * 1024 * 1024 },
+    { maxBuffer: 10 * 1024 * 1024 },
     function(error, stdout) {
       if (error) { return callback(error); }
       if (stdout.trim() !== 'ok') { return callback(new Error('no artwork')); }
