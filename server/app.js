@@ -549,6 +549,46 @@ if (!fs.existsSync(ARTWORK_DIR)) { fs.mkdirSync(ARTWORK_DIR); }
 var CUSTOM_ARTWORK_DIR = path.join(__dirname, 'custom-artwork');
 if (!fs.existsSync(CUSTOM_ARTWORK_DIR)) { fs.mkdirSync(CUSTOM_ARTWORK_DIR); }
 
+// Serve cached artwork as static files — bypasses route logic for maximum speed
+var staticOpts = {
+  maxAge: '1y',
+  immutable: true,
+  setHeaders: function(res) {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  }
+};
+app.use('/artwork-cache', express.static(ARTWORK_DIR, staticOpts));
+app.use('/custom-artwork', express.static(CUSTOM_ARTWORK_DIR, staticOpts));
+
+// Unified static artwork endpoint — checks custom-artwork first, then artwork-cache
+// Used by browse_media.py for fast direct serving without route logic or AppleScript
+app.get('/artwork-static/:file', function(req, res) {
+  var file = req.params.file;
+  var exts = ['.jpg', '.jpeg', '.png'];
+  var base = file.replace(/\.(jpg|jpeg|png)$/, '');
+
+  // Strip prefix (playlist-, artist-) to get the slug used in custom-artwork filenames
+  var slug = base.replace(/^(playlist-|artist-)/, '');
+
+  // Check custom-artwork using slug (no prefix) for all extensions
+  for (var i = 0; i < exts.length; i++) {
+    var custom = path.join(CUSTOM_ARTWORK_DIR, slug + exts[i]);
+    if (fs.existsSync(custom)) {
+      res.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.sendFile(custom);
+    }
+  }
+
+  // Fall back to artwork-cache using full base name
+  var cached = path.join(ARTWORK_DIR, base + '.jpg');
+  if (fs.existsSync(cached)) {
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(cached);
+  }
+
+  res.sendStatus(404);
+});
+
 function customArtworkPath(name) {
   var slug = slugify(name);
   var exts = ['.jpg', '.jpeg', '.png'];
