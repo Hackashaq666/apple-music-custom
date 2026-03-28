@@ -223,12 +223,13 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         await self.coordinator.async_send_command("PUT", "/stop")
 
     async def async_media_next_track(self) -> None:
+        # Optimistically clear track info so UI shows loading state instantly
+        self._optimistic_state("playing")
         await self.coordinator.async_send_command("PUT", "/next")
-        await self.coordinator.async_request_refresh()
 
     async def async_media_previous_track(self) -> None:
+        self._optimistic_state("playing")
         await self.coordinator.async_send_command("PUT", "/previous")
-        await self.coordinator.async_request_refresh()
 
     async def async_set_volume_level(self, volume: float) -> None:
         self._optimistic_volume = float(volume)
@@ -242,7 +243,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
 
     async def async_mute_volume(self, mute: bool) -> None:
         await self.coordinator.async_send_command("PUT", "/mute", data={"muted": str(mute).lower()})
-        await self.coordinator.async_request_refresh()
 
     async def async_set_shuffle(self, shuffle: bool) -> None:
         mode = "songs" if shuffle else "off"
@@ -250,14 +250,12 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         self.async_write_ha_state()
         await self.coordinator.async_send_command("PUT", "/shuffle", data={"mode": mode})
         self._optimistic_shuffle = None
-        await self.coordinator.async_request_refresh()
 
     async def async_set_repeat(self, repeat: str) -> None:
         self._optimistic_repeat = repeat
         self.async_write_ha_state()
         await self.coordinator.async_send_command("PUT", "/repeat", data={"mode": repeat})
         self._optimistic_repeat = None
-        await self.coordinator.async_request_refresh()
 
     async def async_media_seek(self, position: float) -> None:
         await self.coordinator.async_send_command("PUT", "/seek", data={"position": position})
