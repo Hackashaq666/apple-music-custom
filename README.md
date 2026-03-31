@@ -292,10 +292,26 @@ data:
 
 **Artwork not loading in media browser**
 - The artwork disk cache warms automatically on server startup at 500ms per album. Check progress with: `ls ~/apple-music-custom/server/artwork-cache/ | wc -l`
-- Check server logs: `tail -f ~/apple-music-custom/server/log/output.log`
+- Check server logs: `tail -f ~/apple-music-custom/server/log/apple-music-api.log`
 
 **AirPlay devices not appearing**
 - Reload the integration: Settings → Integrations → Apple Music → Reload
+
+**Server times out with "AppleEvent timed out (-1712)"**
+
+This happens when the server process doesn't have permission to control Music.app, or when it runs outside the macOS GUI session (e.g. over SSH).
+
+- Open **System Settings → Privacy & Security → Automation** and confirm that the process running Node.js (Terminal, iTerm, or `node`) has **Music** checked
+- If the permission entry is missing, run this in Terminal to trigger the macOS dialog:
+  ```bash
+  osascript -e 'tell application "Music" to get player state'
+  ```
+  Click **OK** when prompted, then restart the server
+- **If you start the server over SSH:** osascript cannot interact with the GUI session over SSH. The fix is to install the server as a launchd service which runs in the proper user session:
+  ```bash
+  npm run install-service
+  ```
+  The service starts automatically at login and runs in the correct GUI context. Use `npm run dev` only for testing from Terminal directly on the Mac.
 
 ---
 
