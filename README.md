@@ -1,6 +1,6 @@
 # Apple Music for Home Assistant
 
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-blue.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Hackashaq666/apple-music-custom.svg)](https://github.com/Hackashaq666/apple-music-custom/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -148,10 +148,8 @@ The server exposes a local HTTP API on port `8181`. Key endpoints:
 ### Install via HACS
 
 1. In HACS, go to **Integrations**
-2. Click the three-dot menu → **Custom repositories**
-3. Add `https://github.com/Hackashaq666/apple-music-custom` as an **Integration**
-4. Search for **Apple Music** in HACS and install it
-5. Restart Home Assistant
+2. Search for **Apple Music** and install it
+3. Restart Home Assistant
 
 ### Manual install
 
