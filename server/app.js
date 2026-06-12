@@ -1268,6 +1268,33 @@ process.on('unhandledRejection', function(reason) {
   console.error('[unhandledRejection] Server kept alive:', reason);
 });
 
+app.get('/library/tracks', function(req, res) {
+  var offset = parseInt(req.query.offset) || 0;
+  var limit  = parseInt(req.query.limit)  || 100;
+  var letter = (req.query.letter || '').toUpperCase();
+  getLibraryTracks(function(error, tracks) {
+    if (error) { console.log(error); return res.sendStatus(500); }
+    var filtered = tracks;
+    if (letter) {
+      filtered = tracks.filter(function(t) {
+        if (!t.name) { return letter === '#'; }
+        var c = t.name.trim()[0].toUpperCase();
+        return letter === '#' ? !/[A-Z]/.test(c) : c === letter;
+      });
+    }
+    var sorted = filtered.slice().sort(function(a, b) {
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
+    res.json({
+      total:  sorted.length,
+      offset: offset,
+      limit:  limit,
+      letter: letter || null,
+      tracks: sorted.slice(offset, offset + limit)
+    });
+  });
+});
+
 app.listen(process.env.PORT || 8181);
 
 getLibraryTracks(function(error, tracks) {
