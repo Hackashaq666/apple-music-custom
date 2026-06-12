@@ -183,8 +183,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         return r if r in ("off", "all", "one") else "off"
 
     # ── Progress tracking ─────────────────────────────────────────────────────
-    # HA uses media_position + media_position_updated_at to interpolate the
-    # progress bar live between polls — no need to update every second.
 
     @property
     def media_position(self) -> float | None:
@@ -223,7 +221,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         await self.coordinator.async_send_command("PUT", "/stop")
 
     async def async_media_next_track(self) -> None:
-        # Optimistically clear track info so UI shows loading state instantly
         self._optimistic_state("playing")
         await self.coordinator.async_send_command("PUT", "/next")
 
@@ -233,7 +230,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
 
     async def async_set_volume_level(self, volume: float) -> None:
         self._optimistic_volume = float(volume)
-        # Patch coordinator data immediately so polls don't snap the slider back
         if self.coordinator.data:
             self.coordinator.data = dict(self.coordinator.data)
             self.coordinator.data["volume"] = int(volume * 100)
@@ -276,12 +272,14 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             )
             await self.coordinator.async_request_refresh()
             return
+
         elif parts[0] == "playlist" and len(parts) == 2:
             await self.coordinator.async_send_command(
                 "PUT", f"/playlists/{parts[1]}/play"
             )
             await self.coordinator.async_request_refresh()
             return
+
         elif parts[0] == "album" and len(parts) == 3:
             artist_id = parts[1]
             album_id  = parts[2]
@@ -291,23 +289,15 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             )
             await self.coordinator.async_request_refresh()
             return
-        elif parts[0] == "track" and len(parts) == 2:
-            # Optimistically update state so UI feels instant
-            track_id = parts[1]
-            current = dict(self.coordinator.data or {})
-            current["player_state"] = "playing"
-            current["id"] = track_id
-            current["player_position"] = 0
-            current["position_timestamp"] = None
-            self.coordinator.async_set_updated_data(current)
 
-            # Fire command without blocking — notify.py will push the real state via SSE
-            self.hass.async_create_task(
-                self.coordinator.async_send_command(
-                    "PUT", f"/library/tracks/{track_id}/play"
-                )
+        elif parts[0] == "track" and len(parts) >= 2:
+            track_id = parts[1]
+            await self.coordinator.async_send_command(
+                "PUT", f"/library/tracks/{track_id}/play"
             )
+            await self.coordinator.async_request_refresh()
             return
+
         else:
             _LOGGER.warning("Unrecognised media_id for play_media: %s", media_id)
             return
@@ -400,8 +390,6 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         return AIRPLAY_FEATURES
 
     def _get_device_data(self) -> dict | None:
-        """Find this speaker's current data from the coordinator's airplay cache."""
-        # AirPlay state is fetched separately; we store it as extra data on the coordinator
         return getattr(self.coordinator, "_airplay_devices", {}).get(self._device_id)
 
     @property
@@ -470,7 +458,6 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
     async def async_set_volume_level(self, volume: float) -> None:
         volume = float(volume)
         self._optimistic_volume = volume
-        # Patch the coordinator cache immediately so polls don't snap the slider back
         devices = getattr(self.coordinator, "_airplay_devices", {})
         if self._device_id in devices:
             devices[self._device_id] = dict(devices[self._device_id])
