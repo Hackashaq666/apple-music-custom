@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 
 from homeassistant.components.media_player import (
     BrowseMedia,
+    MediaClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    SearchMedia,
+    SearchMediaQuery,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -45,6 +48,7 @@ MAIN_PLAYER_FEATURES = (
     | MediaPlayerEntityFeature.SEEK
     | MediaPlayerEntityFeature.PLAY_MEDIA
     | MediaPlayerEntityFeature.BROWSE_MEDIA
+    | MediaPlayerEntityFeature.SEARCH_MEDIA
 )
 
 # Features for AirPlay speaker entities
@@ -337,6 +341,98 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             media_content_id or "root",
             self,
         )
+
+    # ── Search ───────────────────────────────────────────────────────────────
+    #
+    # Maps HA's SearchMediaQuery onto the server's /library/search endpoint
+    # (server/app.js), which returns track/artist/album/playlist matches.
+    # media_content_id values follow the exact same "type||..." convention used
+    # in browse_media.py / async_play_media() above, so search results play the
+    # same way browsed items do.
+    #
+    # Assumption: when media_filter_classes contains more than one class (or is
+    # unset), we ask the server for "all" categories rather than issuing several
+    # requests, since the server already does this in one pass.
+    # Edge case: an empty/whitespace-only search_query returns no results instead
+    # of hitting the server, mirroring the server's own 400 on a missing q param.
+    async def async_search_media(self, query: SearchMediaQuery) -> SearchMedia:
+        """Search the Apple Music library via the Mac server."""
+        search_query = (query.search_query or "").strip()
+        if not search_query:
+            return SearchMedia(result=[])
+
+        media_type_param = "all"
+        if query.media_filter_classes and len(query.media_filter_classes) == 1:
+            media_type_param = {
+                MediaClass.ARTIST: "artist",
+                MediaClass.ALBUM: "album",
+                MediaClass.TRACK: "track",
+                MediaClass.PLAYLIST: "playlist",
+            }.get(query.media_filter_classes[0], "all")
+
+        path = (
+            f"/library/search?q={urlquote(search_query, safe='')}"
+            f"&media_type={media_type_param}"
+        )
+        data = await self.coordinator.async_get(path) or {}
+
+        S = BROWSE_SEP
+        results: list[BrowseMedia] = []
+
+        for t in data.get("tracks", []) or []:
+            artist = t.get("albumArtist") or t.get("artist") or ""
+            album = t.get("album") or ""
+            title = f"{t.get('name', '')} — {artist}" if artist else t.get("name", "")
+            results.append(
+                BrowseMedia(
+                    title=title,
+                    media_class=MediaClass.TRACK,
+                    media_content_type=MediaType.TRACK,
+                    media_content_id=f"track{S}{t.get('id', '')}{S}{artist}{S}{album}",
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+
+        for a in data.get("artists", []) or []:
+            results.append(
+                BrowseMedia(
+                    title=a.get("name", ""),
+                    media_class=MediaClass.ARTIST,
+                    media_content_type=MediaType.ARTIST,
+                    media_content_id=f"artist{S}{a.get('name', '')}",
+                    can_play=True,
+                    can_expand=True,
+                )
+            )
+
+        for al in data.get("albums", []) or []:
+            artist = al.get("artist", "")
+            title = f"{al.get('name', '')} — {artist}" if artist else al.get("name", "")
+            results.append(
+                BrowseMedia(
+                    title=title,
+                    media_class=MediaClass.ALBUM,
+                    media_content_type=MediaType.ALBUM,
+                    media_content_id=f"album{S}{artist}{S}{al.get('name', '')}",
+                    can_play=True,
+                    can_expand=True,
+                )
+            )
+
+        for pl in data.get("playlists", []) or []:
+            results.append(
+                BrowseMedia(
+                    title=pl.get("name", ""),
+                    media_class=MediaClass.PLAYLIST,
+                    media_content_type=MediaType.PLAYLIST,
+                    media_content_id=f"playlist{S}{pl.get('id', '')}",
+                    can_play=True,
+                    can_expand=False,
+                )
+            )
+
+        return SearchMedia(result=results)
 
 
 def _map_airplay_kind(device_data: dict) -> str:
