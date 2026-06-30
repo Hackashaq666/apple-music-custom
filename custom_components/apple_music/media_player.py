@@ -25,7 +25,7 @@ import re
 from urllib.parse import quote as urlquote
 
 from . import AppleMusicCoordinator
-from .browse_media import async_browse_media
+from .browse_media import async_browse_media, _thumb, _track_thumb, slugify
 from .const import BROWSE_SEP, CONF_HOST, CONF_PORT, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -377,58 +377,80 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         data = await self.coordinator.async_get(path) or {}
 
         S = BROWSE_SEP
+        hass = self.coordinator.hass
+        base_url = self.coordinator.base_url
         results: list[BrowseMedia] = []
 
         for t in data.get("tracks", []) or []:
             artist = t.get("albumArtist") or t.get("artist") or ""
             album = t.get("album") or ""
             title = f"{t.get('name', '')} — {artist}" if artist else t.get("name", "")
+            cid = f"track{S}{t.get('id', '')}{S}{artist}{S}{album}"
+            # Reuse the same thumbnail helper as the browse tree so the
+            # artwork cache built at server startup is hit correctly.
+            thumbnail = _track_thumb(t, hass, base_url, self, S)
             results.append(
                 BrowseMedia(
                     title=title,
                     media_class=MediaClass.TRACK,
                     media_content_type=MediaType.TRACK,
-                    media_content_id=f"track{S}{t.get('id', '')}{S}{artist}{S}{album}",
+                    media_content_id=cid,
                     can_play=True,
                     can_expand=False,
+                    thumbnail=thumbnail,
                 )
             )
 
         for a in data.get("artists", []) or []:
+            name = a.get("name", "")
+            cid = f"artist{S}{name}"
+            static_file = f"artist-{slugify(name)}.jpg"
+            thumbnail = _thumb(hass, base_url, static_file, self, MediaType.ARTIST, cid)
             results.append(
                 BrowseMedia(
-                    title=a.get("name", ""),
+                    title=name,
                     media_class=MediaClass.ARTIST,
                     media_content_type=MediaType.ARTIST,
-                    media_content_id=f"artist{S}{a.get('name', '')}",
+                    media_content_id=cid,
                     can_play=True,
                     can_expand=True,
+                    thumbnail=thumbnail,
                 )
             )
 
         for al in data.get("albums", []) or []:
             artist = al.get("artist", "")
-            title = f"{al.get('name', '')} — {artist}" if artist else al.get("name", "")
+            al_name = al.get("name", "")
+            title = f"{al_name} — {artist}" if artist else al_name
+            cid = f"album{S}{artist}{S}{al_name}"
+            static_file = f"{slugify(artist + '||' + al_name)}.jpg"
+            thumbnail = _thumb(hass, base_url, static_file, self, MediaType.ALBUM, cid)
             results.append(
                 BrowseMedia(
                     title=title,
                     media_class=MediaClass.ALBUM,
                     media_content_type=MediaType.ALBUM,
-                    media_content_id=f"album{S}{artist}{S}{al.get('name', '')}",
+                    media_content_id=cid,
                     can_play=True,
                     can_expand=True,
+                    thumbnail=thumbnail,
                 )
             )
 
         for pl in data.get("playlists", []) or []:
+            pl_name = pl.get("name", "")
+            cid = f"playlist{S}{pl.get('id', '')}"
+            static_file = f"playlist-{slugify(pl_name)}.jpg"
+            thumbnail = _thumb(hass, base_url, static_file, self, MediaType.PLAYLIST, cid)
             results.append(
                 BrowseMedia(
-                    title=pl.get("name", ""),
+                    title=pl_name,
                     media_class=MediaClass.PLAYLIST,
                     media_content_type=MediaType.PLAYLIST,
-                    media_content_id=f"playlist{S}{pl.get('id', '')}",
+                    media_content_id=cid,
                     can_play=True,
                     can_expand=False,
+                    thumbnail=thumbnail,
                 )
             )
 
