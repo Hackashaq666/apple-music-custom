@@ -154,12 +154,13 @@ var FETCH_TRACKS_SCRIPT = [
   '  var allTrackNums = lib.tracks.trackNumber();',
   '  var allDiscNums = lib.tracks.discNumber();',
   '  var allDurations = lib.tracks.duration();',
+  '  var allCompilations = lib.tracks.compilation();',
   '  for (var i = 0; i < allIDs.length; i++) {',
   '    var kind = allKinds[i] || "";',
   '    if (kind !== "song" && kind !== "" && kind !== undefined) { continue; }',
   '    var id = allIDs[i] || "";',
   '    if (!id) { continue; }',
-  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0 });',
+  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true });',
   '  }',
   '} catch(bulkErr) {',
   '  try {',
@@ -171,7 +172,7 @@ var FETCH_TRACKS_SCRIPT = [
   '        if (kind !== "song" && kind !== "" && kind !== undefined) { continue; }',
   '        var id = ""; try { id = t.persistentID(); } catch(e) {}',
   '        if (!id) { continue; }',
-  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })() });',
+  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })() });',
   '      } catch(e) {}',
   '    }',
   '  } catch(e) {}',
@@ -394,6 +395,8 @@ function getLibraryTracks(callback) {
   );
 }
 
+var VARIOUS_ARTISTS = 'Various Artists';
+
 function buildAlbums(tracks, offset, limit) {
   var seen   = {};
   var albums = [];
@@ -401,7 +404,12 @@ function buildAlbums(tracks, offset, limit) {
     var t      = tracks[i];
     var name   = t.album;
     if (!name) { continue; }
-    var artist = t.albumArtist || t.artist || '';
+    // Custom addition: tracks flagged as part of a compilation (Music.app's own
+    // "compilation" property) are grouped by album name only, under "Various
+    // Artists" — instead of fragmenting into one entry per differing
+    // artist/albumArtist tag, which is how compilations are commonly (and
+    // inconsistently) tagged in imported libraries.
+    var artist = t.compilation === true ? VARIOUS_ARTISTS : (t.albumArtist || t.artist || '');
     var key    = artist + '||' + name;
     if (!seen[key]) {
       seen[key] = true;
@@ -410,6 +418,18 @@ function buildAlbums(tracks, offset, limit) {
   }
   albums.sort(function(a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
   return { total: albums.length, offset: offset, limit: limit, albums: albums.slice(offset, offset + limit) };
+}
+
+// Custom addition: shared by /library/albums/:artist/:album/tracks and
+// .../play below, so a track matches a requested artist either the normal way
+// (albumArtist/artist equals the requested name) or — when the requested
+// artist is our "Various Artists" pseudo-artist — by having the
+// compilation flag set, regardless of its actual per-track artist tag.
+function matchesAlbumArtist(t, artistName) {
+  if (artistName === VARIOUS_ARTISTS && t.compilation === true) { return true; }
+  var albumArtist = t.albumArtist || t.artist || '';
+  var artist      = t.artist || '';
+  return albumArtist === artistName || artist === artistName;
 }
 
 function buildArtists(tracks, offset, limit) {
@@ -671,16 +691,32 @@ function prefetchAllArtwork(tracks) {
   var seen  = {};
   var queue = [];
 
-  for (var i = 0; i < tracks.length; i++) {
-    var t      = tracks[i];
-    var artist = t.albumArtist || t.artist || '';
-    var album  = t.album || '';
-    if (!artist || !album) { continue; }
+  function enqueue(artist, album) {
+    if (!artist || !album) { return; }
     var key = artist + '||' + album;
-    if (seen[key]) { continue; }
+    if (seen[key]) { return; }
     seen[key] = true;
     if (!fs.existsSync(artworkFilePath(artist, album))) {
       queue.push({ artist: artist, album: album });
+    }
+  }
+
+  for (var i = 0; i < tracks.length; i++) {
+    var t      = tracks[i];
+    var album  = t.album || '';
+    var realArtist = t.albumArtist || t.artist || '';
+    // Always prefetch under the real per-track artist tag — needed for
+    // individual track-level thumbnails (e.g. Tracks-by-letter browse),
+    // regardless of compilation status. This is the original behaviour.
+    enqueue(realArtist, album);
+    // Custom addition: ADDITIONALLY prefetch under the "Various Artists"
+    // pseudo-artist for compilation tracks, matching buildAlbums()'s
+    // grouping — needed so album-level thumbnails (album browse/search)
+    // resolve to a cache file, since /artwork-static only serves from
+    // cache and never fetches on demand. This is in addition to, not
+    // instead of, the real-artist entry above.
+    if (t.compilation === true) {
+      enqueue(VARIOUS_ARTISTS, album);
     }
   }
 
@@ -1160,9 +1196,7 @@ app.get('/library/albums/:artist/:album/tracks', function(req, res) {
       var t      = tracks[i];
       var album  = t.album || '';
       if (album !== albumName) { continue; }
-      var albumArtist = t.albumArtist || t.artist || '';
-      var artist      = t.artist || '';
-      if (albumArtist !== artistName && artist !== artistName) { continue; }
+      if (!matchesAlbumArtist(t, artistName)) { continue; }
       results.push({
         id:           t.id,
         name:         t.name,
@@ -1195,7 +1229,7 @@ app.put('/library/albums/:artist/:album/play', function(req, res) {
   getLibraryTracks(function(error, tracks) {
     if (error) { return res.sendStatus(500); }
     var ids = tracks
-      .filter(function(t) { return t.album === album && (t.albumArtist || t.artist || '') === artist; })
+      .filter(function(t) { return t.album === album && matchesAlbumArtist(t, artist); })
       .sort(function(a, b) {
         var ka = (a.disc_number || 1) * 10000 + (a.track_number || 0);
         var kb = (b.disc_number || 1) * 10000 + (b.track_number || 0);
