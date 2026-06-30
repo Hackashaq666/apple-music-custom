@@ -314,6 +314,35 @@ function sendResponse(error, res) {
 var libraryCache = { tracks: null, fetchedAt: 0, ttl: 60 * 60 * 1000, pending: [] };
 var albumsCache  = null;
 var artistsCache = null;
+// Custom addition: short-lived playlist cache used only by the extended /library/search
+// endpoint below, so typing in YAMP's search box doesn't trigger an AppleScript exec per
+// keystroke. The existing /playlists route is left untouched and still fetches live.
+var playlistsCache = { data: null, fetchedAt: 0, ttl: 5 * 60 * 1000 };
+
+function getPlaylistsCached(callback) {
+  var now = Date.now();
+  if (playlistsCache.data && (now - playlistsCache.fetchedAt) < playlistsCache.ttl) {
+    return callback(null, playlistsCache.data);
+  }
+  var script = path.join(__dirname, 'lib', 'get-playlists.applescript');
+  execFile('osascript', [script], function(error, stdout) {
+    if (error) { return callback(error); }
+    var playlists = [];
+    var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var tab = line.indexOf('\t');
+      if (tab === -1) { continue; }
+      var id   = line.substring(0, tab).trim();
+      var name = line.substring(tab + 1).trim();
+      if (id && name) { playlists.push({ id: id, name: name }); }
+    }
+    playlistsCache.data      = playlists;
+    playlistsCache.fetchedAt = Date.now();
+    callback(null, playlists);
+  });
+}
 
 // SSE clients and push state
 var sseClients = [];
@@ -1208,15 +1237,73 @@ app.get('/library/search', function(req, res) {
   if (!query) {
     return res.status(400).json({ error: 'q parameter is required' });
   }
+  // Custom addition: optional media_type filter ('all' | 'track' | 'artist' | 'album' |
+  // 'playlist') and a per-category limit, so callers (e.g. HA's media_player.search_media)
+  // can narrow the request the way YAMP's media-type chips expect. Defaults preserve the
+  // previous track-only behaviour shape, just with the extra (empty) keys added.
+  var mediaType = (req.query.media_type || 'all').toLowerCase();
+  var limit = parseInt(req.query.limit) || 50;
+  var wantTracks    = mediaType === 'all' || mediaType === 'track';
+  var wantArtists   = mediaType === 'all' || mediaType === 'artist';
+  var wantAlbums    = mediaType === 'all' || mediaType === 'album';
+  var wantPlaylists = mediaType === 'all' || mediaType === 'playlist';
+
   getLibraryTracks(function(error, tracks) {
     if (error) { console.log(error); return res.sendStatus(500); }
-    var results = [];
-    for (var i = 0; i < tracks.length && results.length < 50; i++) {
-      var t = tracks[i];
-      if ((t.name || '').toLowerCase().indexOf(query) === -1) { continue; }
-      results.push({ id: t.id, name: t.name, artist: t.artist, album: t.album });
+
+    var trackResults = [];
+    if (wantTracks) {
+      for (var i = 0; i < tracks.length && trackResults.length < limit; i++) {
+        var t = tracks[i];
+        if ((t.name || '').toLowerCase().indexOf(query) === -1) { continue; }
+        trackResults.push({
+          id: t.id, name: t.name, artist: t.artist, album: t.album,
+          albumArtist: t.albumArtist
+        });
+      }
     }
-    res.json({ query: query, tracks: results });
+
+    var artistResults = [];
+    if (wantArtists) {
+      if (!artistsCache) { artistsCache = buildArtists(tracks, 0, 999999); }
+      artistResults = artistsCache.artists
+        .filter(function(a) { return a.name.toLowerCase().indexOf(query) !== -1; })
+        .slice(0, limit);
+    }
+
+    var albumResults = [];
+    if (wantAlbums) {
+      if (!albumsCache) { albumsCache = buildAlbums(tracks, 0, 999999); }
+      albumResults = albumsCache.albums
+        .filter(function(al) { return al.name.toLowerCase().indexOf(query) !== -1; })
+        .slice(0, limit);
+    }
+
+    function sendResults(playlists) {
+      var playlistResults = wantPlaylists
+        ? playlists.filter(function(pl) { return pl.name.toLowerCase().indexOf(query) !== -1; }).slice(0, limit)
+        : [];
+      res.json({
+        query: query,
+        tracks: trackResults,
+        artists: artistResults,
+        albums: albumResults,
+        playlists: playlistResults
+      });
+    }
+
+    if (wantPlaylists) {
+      getPlaylistsCached(function(plError, playlists) {
+        if (plError) {
+          // Degrade gracefully: a playlist-fetch failure shouldn't fail the whole search
+          console.log('playlist search error:', plError);
+          return sendResults([]);
+        }
+        sendResults(playlists);
+      });
+    } else {
+      sendResults([]);
+    }
   });
 });
 
