@@ -1276,7 +1276,7 @@ app.get('/library/search', function(req, res) {
   // can narrow the request the way YAMP's media-type chips expect. Defaults preserve the
   // previous track-only behaviour shape, just with the extra (empty) keys added.
   var mediaType = (req.query.media_type || 'all').toLowerCase();
-  var limit = parseInt(req.query.limit) || 9999; // no default cap; caller can still pass ?limit=N to restrict
+  var limit = parseInt(req.query.limit) || 100;
   var wantTracks    = mediaType === 'all' || mediaType === 'track';
   var wantArtists   = mediaType === 'all' || mediaType === 'artist';
   var wantAlbums    = mediaType === 'all' || mediaType === 'album';
