@@ -154,12 +154,13 @@ var FETCH_TRACKS_SCRIPT = [
   '  var allTrackNums = lib.tracks.trackNumber();',
   '  var allDiscNums = lib.tracks.discNumber();',
   '  var allDurations = lib.tracks.duration();',
+  '  var allCompilations = lib.tracks.compilation();',
   '  for (var i = 0; i < allIDs.length; i++) {',
   '    var kind = allKinds[i] || "";',
   '    if (kind !== "song" && kind !== "" && kind !== undefined) { continue; }',
   '    var id = allIDs[i] || "";',
   '    if (!id) { continue; }',
-  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0 });',
+  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true });',
   '  }',
   '} catch(bulkErr) {',
   '  try {',
@@ -171,7 +172,7 @@ var FETCH_TRACKS_SCRIPT = [
   '        if (kind !== "song" && kind !== "" && kind !== undefined) { continue; }',
   '        var id = ""; try { id = t.persistentID(); } catch(e) {}',
   '        if (!id) { continue; }',
-  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })() });',
+  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })() });',
   '      } catch(e) {}',
   '    }',
   '  } catch(e) {}',
@@ -314,6 +315,35 @@ function sendResponse(error, res) {
 var libraryCache = { tracks: null, fetchedAt: 0, ttl: 60 * 60 * 1000, pending: [] };
 var albumsCache  = null;
 var artistsCache = null;
+// Custom addition: short-lived playlist cache used only by the extended /library/search
+// endpoint below, so typing in YAMP's search box doesn't trigger an AppleScript exec per
+// keystroke. The existing /playlists route is left untouched and still fetches live.
+var playlistsCache = { data: null, fetchedAt: 0, ttl: 5 * 60 * 1000 };
+
+function getPlaylistsCached(callback) {
+  var now = Date.now();
+  if (playlistsCache.data && (now - playlistsCache.fetchedAt) < playlistsCache.ttl) {
+    return callback(null, playlistsCache.data);
+  }
+  var script = path.join(__dirname, 'lib', 'get-playlists.applescript');
+  execFile('osascript', [script], function(error, stdout) {
+    if (error) { return callback(error); }
+    var playlists = [];
+    var lines = (stdout || '').trim().split(/\r\n|\r|\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var tab = line.indexOf('\t');
+      if (tab === -1) { continue; }
+      var id   = line.substring(0, tab).trim();
+      var name = line.substring(tab + 1).trim();
+      if (id && name) { playlists.push({ id: id, name: name }); }
+    }
+    playlistsCache.data      = playlists;
+    playlistsCache.fetchedAt = Date.now();
+    callback(null, playlists);
+  });
+}
 
 // SSE clients and push state
 var sseClients = [];
@@ -365,6 +395,8 @@ function getLibraryTracks(callback) {
   );
 }
 
+var VARIOUS_ARTISTS = 'Various Artists';
+
 function buildAlbums(tracks, offset, limit) {
   var seen   = {};
   var albums = [];
@@ -372,7 +404,12 @@ function buildAlbums(tracks, offset, limit) {
     var t      = tracks[i];
     var name   = t.album;
     if (!name) { continue; }
-    var artist = t.albumArtist || t.artist || '';
+    // Custom addition: tracks flagged as part of a compilation (Music.app's own
+    // "compilation" property) are grouped by album name only, under "Various
+    // Artists" — instead of fragmenting into one entry per differing
+    // artist/albumArtist tag, which is how compilations are commonly (and
+    // inconsistently) tagged in imported libraries.
+    var artist = t.compilation === true ? VARIOUS_ARTISTS : (t.albumArtist || t.artist || '');
     var key    = artist + '||' + name;
     if (!seen[key]) {
       seen[key] = true;
@@ -381,6 +418,18 @@ function buildAlbums(tracks, offset, limit) {
   }
   albums.sort(function(a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
   return { total: albums.length, offset: offset, limit: limit, albums: albums.slice(offset, offset + limit) };
+}
+
+// Custom addition: shared by /library/albums/:artist/:album/tracks and
+// .../play below, so a track matches a requested artist either the normal way
+// (albumArtist/artist equals the requested name) or — when the requested
+// artist is our "Various Artists" pseudo-artist — by having the
+// compilation flag set, regardless of its actual per-track artist tag.
+function matchesAlbumArtist(t, artistName) {
+  if (artistName === VARIOUS_ARTISTS && t.compilation === true) { return true; }
+  var albumArtist = t.albumArtist || t.artist || '';
+  var artist      = t.artist || '';
+  return albumArtist === artistName || artist === artistName;
 }
 
 function buildArtists(tracks, offset, limit) {
@@ -642,16 +691,32 @@ function prefetchAllArtwork(tracks) {
   var seen  = {};
   var queue = [];
 
-  for (var i = 0; i < tracks.length; i++) {
-    var t      = tracks[i];
-    var artist = t.albumArtist || t.artist || '';
-    var album  = t.album || '';
-    if (!artist || !album) { continue; }
+  function enqueue(artist, album) {
+    if (!artist || !album) { return; }
     var key = artist + '||' + album;
-    if (seen[key]) { continue; }
+    if (seen[key]) { return; }
     seen[key] = true;
     if (!fs.existsSync(artworkFilePath(artist, album))) {
       queue.push({ artist: artist, album: album });
+    }
+  }
+
+  for (var i = 0; i < tracks.length; i++) {
+    var t      = tracks[i];
+    var album  = t.album || '';
+    var realArtist = t.albumArtist || t.artist || '';
+    // Always prefetch under the real per-track artist tag — needed for
+    // individual track-level thumbnails (e.g. Tracks-by-letter browse),
+    // regardless of compilation status. This is the original behaviour.
+    enqueue(realArtist, album);
+    // Custom addition: ADDITIONALLY prefetch under the "Various Artists"
+    // pseudo-artist for compilation tracks, matching buildAlbums()'s
+    // grouping — needed so album-level thumbnails (album browse/search)
+    // resolve to a cache file, since /artwork-static only serves from
+    // cache and never fetches on demand. This is in addition to, not
+    // instead of, the real-artist entry above.
+    if (t.compilation === true) {
+      enqueue(VARIOUS_ARTISTS, album);
     }
   }
 
@@ -1131,9 +1196,7 @@ app.get('/library/albums/:artist/:album/tracks', function(req, res) {
       var t      = tracks[i];
       var album  = t.album || '';
       if (album !== albumName) { continue; }
-      var albumArtist = t.albumArtist || t.artist || '';
-      var artist      = t.artist || '';
-      if (albumArtist !== artistName && artist !== artistName) { continue; }
+      if (!matchesAlbumArtist(t, artistName)) { continue; }
       results.push({
         id:           t.id,
         name:         t.name,
@@ -1166,7 +1229,7 @@ app.put('/library/albums/:artist/:album/play', function(req, res) {
   getLibraryTracks(function(error, tracks) {
     if (error) { return res.sendStatus(500); }
     var ids = tracks
-      .filter(function(t) { return t.album === album && (t.albumArtist || t.artist || '') === artist; })
+      .filter(function(t) { return t.album === album && matchesAlbumArtist(t, artist); })
       .sort(function(a, b) {
         var ka = (a.disc_number || 1) * 10000 + (a.track_number || 0);
         var kb = (b.disc_number || 1) * 10000 + (b.track_number || 0);
@@ -1208,15 +1271,73 @@ app.get('/library/search', function(req, res) {
   if (!query) {
     return res.status(400).json({ error: 'q parameter is required' });
   }
+  // Custom addition: optional media_type filter ('all' | 'track' | 'artist' | 'album' |
+  // 'playlist') and a per-category limit, so callers (e.g. HA's media_player.search_media)
+  // can narrow the request the way YAMP's media-type chips expect. Defaults preserve the
+  // previous track-only behaviour shape, just with the extra (empty) keys added.
+  var mediaType = (req.query.media_type || 'all').toLowerCase();
+  var limit = parseInt(req.query.limit) || 9999; // no default cap; caller can still pass ?limit=N to restrict
+  var wantTracks    = mediaType === 'all' || mediaType === 'track';
+  var wantArtists   = mediaType === 'all' || mediaType === 'artist';
+  var wantAlbums    = mediaType === 'all' || mediaType === 'album';
+  var wantPlaylists = mediaType === 'all' || mediaType === 'playlist';
+
   getLibraryTracks(function(error, tracks) {
     if (error) { console.log(error); return res.sendStatus(500); }
-    var results = [];
-    for (var i = 0; i < tracks.length && results.length < 50; i++) {
-      var t = tracks[i];
-      if ((t.name || '').toLowerCase().indexOf(query) === -1) { continue; }
-      results.push({ id: t.id, name: t.name, artist: t.artist, album: t.album });
+
+    var trackResults = [];
+    if (wantTracks) {
+      for (var i = 0; i < tracks.length && trackResults.length < limit; i++) {
+        var t = tracks[i];
+        if ((t.name || '').toLowerCase().indexOf(query) === -1) { continue; }
+        trackResults.push({
+          id: t.id, name: t.name, artist: t.artist, album: t.album,
+          albumArtist: t.albumArtist
+        });
+      }
     }
-    res.json({ query: query, tracks: results });
+
+    var artistResults = [];
+    if (wantArtists) {
+      if (!artistsCache) { artistsCache = buildArtists(tracks, 0, 999999); }
+      artistResults = artistsCache.artists
+        .filter(function(a) { return a.name.toLowerCase().indexOf(query) !== -1; })
+        .slice(0, limit);
+    }
+
+    var albumResults = [];
+    if (wantAlbums) {
+      if (!albumsCache) { albumsCache = buildAlbums(tracks, 0, 999999); }
+      albumResults = albumsCache.albums
+        .filter(function(al) { return al.name.toLowerCase().indexOf(query) !== -1; })
+        .slice(0, limit);
+    }
+
+    function sendResults(playlists) {
+      var playlistResults = wantPlaylists
+        ? playlists.filter(function(pl) { return pl.name.toLowerCase().indexOf(query) !== -1; }).slice(0, limit)
+        : [];
+      res.json({
+        query: query,
+        tracks: trackResults,
+        artists: artistResults,
+        albums: albumResults,
+        playlists: playlistResults
+      });
+    }
+
+    if (wantPlaylists) {
+      getPlaylistsCached(function(plError, playlists) {
+        if (plError) {
+          // Degrade gracefully: a playlist-fetch failure shouldn't fail the whole search
+          console.log('playlist search error:', plError);
+          return sendResults([]);
+        }
+        sendResults(playlists);
+      });
+    } else {
+      sendResults([]);
+    }
   });
 });
 
@@ -1266,6 +1387,33 @@ process.on('uncaughtException', function(err) {
 
 process.on('unhandledRejection', function(reason) {
   console.error('[unhandledRejection] Server kept alive:', reason);
+});
+
+app.get('/library/tracks', function(req, res) {
+  var offset = parseInt(req.query.offset) || 0;
+  var limit  = parseInt(req.query.limit)  || 100;
+  var letter = (req.query.letter || '').toUpperCase();
+  getLibraryTracks(function(error, tracks) {
+    if (error) { console.log(error); return res.sendStatus(500); }
+    var filtered = tracks;
+    if (letter) {
+      filtered = tracks.filter(function(t) {
+        if (!t.name) { return letter === '#'; }
+        var c = t.name.trim()[0].toUpperCase();
+        return letter === '#' ? !/[A-Z]/.test(c) : c === letter;
+      });
+    }
+    var sorted = filtered.slice().sort(function(a, b) {
+      return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    });
+    res.json({
+      total:  sorted.length,
+      offset: offset,
+      limit:  limit,
+      letter: letter || null,
+      tracks: sorted.slice(offset, offset + limit)
+    });
+  });
 });
 
 app.listen(process.env.PORT || 8181);
