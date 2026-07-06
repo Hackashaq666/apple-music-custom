@@ -1124,6 +1124,33 @@ app.put('/playlists/:id/play', function(req, res) {
 });
 
 
+app.get('/playlists/:id/tracks', function(req, res) {
+  var plId = req.params.id;
+  if (!/^\d+$/.test(plId)) { return res.status(400).json({ error: 'numeric playlist id required' }); }
+  var script = path.join(__dirname, 'lib', 'get-playlist-tracks.applescript');
+  execFile('osascript', [script, plId], function(error, stdout) {
+    if (error) { console.log('get-playlist-tracks error:', error); return res.sendStatus(500); }
+    var out = (stdout || '').trim();
+    if (out === 'notfound') { return res.sendStatus(404); }
+    var tracks = [];
+    var lines = out.split(/\r\n|\r|\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split('\t');
+      if (parts.length < 5) { continue; }
+      var id        = parts[0].trim();
+      var name      = parts[1].trim();
+      var artist    = parts[2].trim();
+      var albArtist = parts[3].trim();
+      var album     = parts[4].trim();
+      if (id) {
+        tracks.push({ id: id, name: name, artist: artist,
+                      albumArtist: albArtist, album: album });
+      }
+    }
+    res.json({ tracks: tracks });
+  });
+});
+
 app.get('/library/artists', function(req, res) {
   var offset = parseInt(req.query.offset) || 0;
   var limit  = parseInt(req.query.limit)  || 100;
