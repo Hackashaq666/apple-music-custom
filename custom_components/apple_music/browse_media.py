@@ -4,7 +4,6 @@ import logging, re
 from urllib.parse import quote
 from homeassistant.components.media_player import BrowseMedia, MediaClass, MediaType
 from homeassistant.components.media_player.errors import BrowseError
-from homeassistant.helpers.network import is_internal_request
 from .const import (
     BROWSE_ALBUMS, BROWSE_ARTISTS, BROWSE_PLAYLISTS,
     BROWSE_ROOT, BROWSE_SEP, BROWSE_TRACKS,
@@ -23,10 +22,11 @@ def _first_letter(name: str) -> str:
     return c if c.isalpha() else '#'
 
 def _thumb(hass, base_url, static_file, entity, mtype, cid):
+    # Always use HA's media proxy URL instead of the direct server URL.
+    # Direct HTTP URLs (http://mac-server:8181/...) cause Mixed Content
+    # blocking in Safari when HA is served over HTTPS.
     if not entity:
         return None
-    if is_internal_request(hass):
-        return f"{base_url}/artwork-static/{static_file}"
     return entity.get_browse_image_url(mtype, cid, media_image_id=f"artwork-static/{static_file}")
 
 def _node(title, mc, mt, cid, play, expand, children=None, thumbnail=None):
@@ -65,7 +65,7 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
     if media_content_id == BROWSE_PLAYLISTS:
         data = await C.async_get("/playlists") or {}
         kids = [_node(pl["name"], MediaClass.PLAYLIST, MediaType.PLAYLIST,
-                      f"playlist{S}{pl['id']}", True, False,
+                      f"playlist{S}{pl['id']}", True, True,
                       thumbnail=_thumb(hu, bu,
                                        f"playlist-{slugify(pl['name'])}.jpg",
                                        entity, MediaType.PLAYLIST,
@@ -174,11 +174,26 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
     # ── Album → seine Tracks ──────────────────────────────────────────────────
     if parts[0] == "album" and len(parts) == 3:
         data = await C.async_get(f"/library/albums/{q(parts[1])}/{q(parts[2])}/tracks") or {}
-        kids = [_node(t["name"], MediaClass.TRACK, MediaType.TRACK,
-                      f"track{S}{t['id']}", True, False,
-                      thumbnail=_track_thumb(t, hu, bu, entity, S))
+        kids = [_node(
+                    f"{t['name']} — {t['artist']}" if t.get("artist") else t["name"],
+                    MediaClass.TRACK, MediaType.TRACK,
+                    f"track{S}{t['id']}", True, False,
+                    thumbnail=_track_thumb(t, hu, bu, entity, S))
                 for t in data.get("tracks", [])]
         return _node(data.get("album", parts[2]), MediaClass.ALBUM, MediaType.ALBUM,
                      f"album{S}{parts[1]}{S}{parts[2]}", False, True, kids)
+
+    # ── Playlist → ihre Tracks ───────────────────────────────────────────────
+    if parts[0] == "playlist" and len(parts) == 2:
+        pl_id = parts[1]
+        data  = await C.async_get(f"/playlists/{q(pl_id)}/tracks") or {}
+        kids  = [_node(
+                    f"{t['name']} — {t.get('albumArtist') or t.get('artist') or ''}".rstrip(" — "),
+                    MediaClass.TRACK, MediaType.TRACK,
+                    f"track{S}{t['id']}", True, False,
+                    thumbnail=_track_thumb(t, hu, bu, entity, S))
+                 for t in data.get("tracks", [])]
+        return _node(media_content_id, MediaClass.PLAYLIST, MediaType.PLAYLIST,
+                     f"playlist{S}{pl_id}", False, True, kids)
 
     raise BrowseError(f"Unknown media_content_id: {media_content_id}")
