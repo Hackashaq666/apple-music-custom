@@ -449,7 +449,7 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
                     media_content_type=MediaType.PLAYLIST,
                     media_content_id=cid,
                     can_play=True,
-                    can_expand=False,
+                    can_expand=True,
                     thumbnail=thumbnail,
                 )
             )
