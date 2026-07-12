@@ -265,8 +265,10 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         self, media_type: str, media_id: str, **kwargs
     ) -> None:
         """Play media from the browser or directly by ID."""
-        # Accept both || (internal) and / (user-friendly) as separator
-        parts = re.split(r'\|\|+|/', media_id)
+        # Nur || als Trennzeichen – / darf NICHT gesplittet werden,
+        # da Album- und Künstlernamen häufig / enthalten
+        # (z. B. "The Best Of David Bowie 1980/1987")
+        parts = re.split(r'\|\|+', media_id)
 
         if parts[0] == "artist" and len(parts) == 2:
             artist_id = parts[1]
@@ -298,6 +300,27 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             track_id = parts[1]
             await self.coordinator.async_send_command(
                 "PUT", f"/library/tracks/{track_id}/play"
+            )
+            await self.coordinator.async_request_refresh()
+            return
+
+        elif media_id.startswith("play_expand||"):
+            # Alles nach "play_expand||" ist kommaseparierter CSV mit rohen Content-IDs
+            # (z.B. "artist||Nena,album||ABBA||Gold") – kein ||split, da Items
+            # selbst || enthalten.
+            items_csv = media_id[len("play_expand||"):]
+            await self.coordinator.async_send_command(
+                "PUT", "/play-search-expand", data={"items": items_csv}
+            )
+            await self.coordinator.async_request_refresh()
+            return
+
+        elif parts[0] == "search_results" and len(parts) > 1:
+            # Format: search_results||id1||id2||...
+            # Spielt Suchergebnisse als temporäre HA_Play_Search-Playlist.
+            ids_str = ",".join(parts[1:])
+            await self.coordinator.async_send_command(
+                "PUT", "/play-search", data={"ids": ids_str}
             )
             await self.coordinator.async_request_refresh()
             return
@@ -382,10 +405,13 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         results: list[BrowseMedia] = []
 
         for t in data.get("tracks", []) or []:
-            artist = t.get("albumArtist") or t.get("artist") or ""
+            # Für die Anzeige: per-Track-Artist (zeigt echten Interpreten auch bei Compilations)
+            display_artist = t.get("artist") or t.get("albumArtist") or ""
+            # Für content_id und Artwork: albumArtist (für korrektes Album-Grouping und Cover-Cache)
+            album_artist   = t.get("albumArtist") or t.get("artist") or ""
             album = t.get("album") or ""
-            title = f"{t.get('name', '')} — {artist}" if artist else t.get("name", "")
-            cid = f"track{S}{t.get('id', '')}{S}{artist}{S}{album}"
+            title = f"{t.get('name', '')} — {display_artist}" if display_artist else t.get("name", "")
+            cid = f"track{S}{t.get('id', '')}{S}{album_artist}{S}{album}"
             # Reuse the same thumbnail helper as the browse tree so the
             # artwork cache built at server startup is hit correctly.
             thumbnail = _track_thumb(t, hass, base_url, self, S)
