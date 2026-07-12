@@ -3,6 +3,8 @@ var path = require('path')
 var express = require('express')
 var morgan = require('morgan')
 var bodyParser = require('body-parser')
+
+
 var iTunes = require('local-itunes')
 var osa = require('osa')
 var osascript = require('osascript')
@@ -157,7 +159,7 @@ var FETCH_TRACKS_SCRIPT = [
   '  var allCompilations = lib.tracks.compilation();',
   '  for (var i = 0; i < allIDs.length; i++) {',
   '    var kind = allKinds[i] || "";',
-  '    if (kind !== "song" && kind !== "" && kind !== undefined) { continue; }',
+  '    if (kind !== "song" && kind !== "music video" && kind !== "" && kind !== undefined) { continue; }',
   '    var id = allIDs[i] || "";',
   '    if (!id) { continue; }',
   '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true });',
@@ -169,7 +171,7 @@ var FETCH_TRACKS_SCRIPT = [
   '      try {',
   '        var t = raw[i];',
   '        var kind = ""; try { kind = t.mediaKind(); } catch(e) {}',
-  '        if (kind !== "song" && kind !== "" && kind !== undefined) { continue; }',
+  '        if (kind !== "song" && kind !== "music video" && kind !== "" && kind !== undefined) { continue; }',
   '        var id = ""; try { id = t.persistentID(); } catch(e) {}',
   '        if (!id) { continue; }',
   '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })() });',
@@ -268,15 +270,24 @@ function playByIDsTempScript(playlistName, ids, callback) {
     'var persistentIDs = ' + JSON.stringify(ids) + ';',
     'var playlists = music.userPlaylists();',
     'for (var i = 0; i < playlists.length; i++) {',
-    '  if (playlists[i].name() === playlistName) { playlists[i].delete(); break; }',
+    // Für HA_Play_Search: alle alten Timestamps-Varianten löschen
+    '  var n = playlists[i].name();',
+    '  if (n === playlistName || n === "HA_Play_Search" || n.indexOf("HA_Play_Search_") === 0) {',
+    '    try { playlists[i].delete(); } catch(e) {}',
+    '  } else if (n === playlistName) {',
+    '    try { playlists[i].delete(); } catch(e) {}',
+    '  }',
     '}',
     'var tempPL = music.make({ new: "userPlaylist", withProperties: { name: playlistName } });',
+    // IDs kommen bereits vorsortiert vom Server – Einfügereihenfolge wird von Music.app respektiert
     'for (var j = 0; j < persistentIDs.length; j++) {',
     '  try {',
     '    var matches = music.tracks.whose({ persistentID: { "=": persistentIDs[j] } });',
     '    if (matches.length > 0) { matches[0].duplicate({ to: tempPL }); }',
     '  } catch(e) {}',
     '}',
+    // Shuffle deaktivieren damit die Wiedergabe der Playlist-Reihenfolge folgt
+    'try { music.shuffleEnabled.set(false); } catch(e) {}',
     'music.play(tempPL);',
   ].join('\n');
   fs.writeFile(tmpFile, script, function(err) {
@@ -1081,7 +1092,10 @@ app.get('/playlists', function(req, res) {
       if (tab === -1) { continue; }
       var id   = line.substring(0, tab).trim();
       var name = line.substring(tab + 1).trim();
-      if (id && name) { playlists.push({ id: id, name: name }); }
+      // Interne HA-Hilfsplaylists ausblenden
+      if (id && name && !name.startsWith('HA_Play_')) {
+        playlists.push({ id: id, name: name });
+      }
     }
     res.json({ playlists: playlists });
   });
@@ -1243,10 +1257,26 @@ app.get('/library/albums/:artist/:album/tracks', function(req, res) {
 });
 
 app.put('/library/tracks/:id/play', function(req, res) {
-  osa(playTrackByID, req.params.id, function(error, played, log) {
-    if (error) { console.log(error); res.sendStatus(500); }
-    else if (!played) { res.sendStatus(404); }
-    else { sendResponse(null, res); }
+  // Custom: statt track.play() direkt → temporäre 1-Track-Playlist 'HA_Play_Track' anlegen
+  // und spielen, analog zu HA_Play_Album/HA_Play_Artist.
+  // Vorteile:
+  //   - sauberes Verhalten nach Track-Ende (kein ungewolltes Weitersetzen in der Library)
+  //   - konsistentes Verhalten unabhängig von shuffle/repeat-Einstellungen
+  //   - Grundlage für spätere "Add to Queue"-Funktion
+  //   - 404-Erkennung: playByIDsTempScript schlägt fehl wenn ID unbekannt (duplicate() throws)
+  var id = req.params.id;
+  playByIDsTempScript('HA_Play_Track', [id], function(error) {
+    if (error) {
+      console.log('play-track error:', error);
+      // Fallback auf direktes play falls temporäre Playlist fehlschlägt
+      osa(playTrackByID, id, function(err2, played) {
+        if (err2) { return res.sendStatus(500); }
+        if (!played) { return res.sendStatus(404); }
+        sendResponse(null, res);
+      });
+      return;
+    }
+    sendResponse(null, res);
   });
 });
 
@@ -1293,6 +1323,95 @@ app.put('/library/artists/:artist/play', function(req, res) {
   });
 });
 
+// DEBUG: zeigt die sortierte Track-Reihenfolge ohne Playlist zu erstellen
+// Aufruf: PUT /debug-play-ids mit body ids=id1,id2,...
+app.put('/debug-play-ids', function(req, res) {
+  var ids = (req.body.ids || '').split(',').filter(Boolean);
+  if (!ids.length) { return res.status(400).json({ error: 'ids required' }); }
+  getLibraryTracks(function(error, tracks) {
+    if (error) { return res.sendStatus(500); }
+    var idSet = {};
+    ids.forEach(function(id) { idSet[id] = true; });
+    var found = tracks.filter(function(t) { return idSet[t.id]; });
+    // Gleiche Sortierung wie im JXA-Script
+    found.sort(function(a, b) {
+      var ac = (a.album || '').localeCompare(b.album || '');
+      if (ac !== 0) return ac;
+      if ((a.disc_number || 0) !== (b.disc_number || 0)) return (a.disc_number || 0) - (b.disc_number || 0);
+      if ((a.track_number || 0) !== (b.track_number || 0)) return (a.track_number || 0) - (b.track_number || 0);
+      return (a.artist || '').localeCompare(b.artist || '');
+    });
+    res.json({ count: found.length, tracks: found.map(function(t, i) {
+      return { pos: i+1, album: t.album, disc: t.disc_number, track: t.track_number,
+               artist: t.artist, albumArtist: t.albumArtist, name: t.name, id: t.id };
+    })});
+  });
+});
+
+app.put('/play-search', function(req, res) {
+  var ids = (req.body.ids || '').split(',').filter(Boolean);
+  if (!ids.length) { return res.status(400).json({ error: 'ids required' }); }
+  getLibraryTracks(function(error, tracks) {
+    if (error) { return res.sendStatus(500); }
+    var trackMap = {};
+    tracks.forEach(function(t) { trackMap[t.id] = t; });
+    // Wie viele IDs kommen an, wie viele werden gefunden?
+    var withMeta = ids.map(function(id) { return trackMap[id]; }).filter(Boolean);
+    // Server-seitig sortieren: album → disc_number → track_number
+    withMeta.sort(function(a, b) {
+      var ac = (a.album || '').localeCompare(b.album || '');
+      if (ac !== 0) return ac;
+      if ((a.disc_number || 0) !== (b.disc_number || 0)) return (a.disc_number || 0) - (b.disc_number || 0);
+      return (a.track_number || 0) - (b.track_number || 0);
+    });
+    var sortedIds = withMeta.map(function(t) { return t.id; });
+    // Eindeutiger Playlist-Name mit Timestamp: verhindert dass Music.app die
+    // gespeicherte Sort-Einstellung von früheren HA_Play_Search-Instanzen übernimmt.
+    // Alte HA_Play_Search*-Playlists werden beim nächsten Aufruf gelöscht (via playByIDsTempScript).
+    var playlistName = 'HA_Play_Search_' + Date.now();
+    playByIDsTempScript(playlistName, sortedIds, function(err) {
+      if (err) { console.log('play-search error:', err); return res.sendStatus(500); }
+      console.log('[play-search] ' + playlistName + ' erstellt mit ' + sortedIds.length + ' Tracks');
+      sendResponse(null, res);
+    });
+  });
+});
+
+app.put('/play-search-expand', function(req, res) {
+  // Expandiert artist||Name und album||Artist||Album Content-IDs zu Track-IDs
+  // und spielt sie als HA_Play_Search. Alle Tracks bereits im libraryCache.
+  var rawItems = (req.body.items || '').split(',').filter(Boolean);
+  if (!rawItems.length) { return res.status(400).json({ error: 'items required' }); }
+
+  getLibraryTracks(function(error, tracks) {
+    if (error) { return res.sendStatus(500); }
+    var ids = [];
+    var seen = {};
+    rawItems.forEach(function(raw) {
+      var parts = raw.split('||');
+      if (parts[0] === 'artist' && parts[1]) {
+        var artist = parts[1];
+        tracks.forEach(function(t) {
+          var a = t.albumArtist || t.artist || '';
+          if (a === artist && !seen[t.id]) { seen[t.id] = true; ids.push(t.id); }
+        });
+      } else if (parts[0] === 'album' && parts[1] && parts[2]) {
+        var albumArtist = parts[1], albumName = parts[2];
+        tracks.forEach(function(t) {
+          if (t.album === albumName && matchesAlbumArtist(t, albumArtist) && !seen[t.id]) {
+            seen[t.id] = true; ids.push(t.id);
+          }
+        });
+      }
+    });
+    if (!ids.length) { return res.status(404).json({ error: 'no tracks found' }); }
+    playByIDsTempScript('HA_Play_Search', ids, function(err) {
+      if (err) { console.log('play-search-expand error:', err); return res.sendStatus(500); }
+      sendResponse(null, res);
+    });
+  });
+});
+
 app.get('/library/search', function(req, res) {
   var query = (req.query.q || '').toLowerCase();
   if (!query) {
@@ -1314,8 +1433,17 @@ app.get('/library/search', function(req, res) {
 
     var trackResults = [];
     if (wantTracks) {
-      for (var i = 0; i < tracks.length && trackResults.length < limit; i++) {
-        var t = tracks[i];
+      // Sortiere vor der Suche nach Album → Disc → Track-Nummer, damit Suchergebnisse
+      // automatisch in Album-Reihenfolge kommen (keine Nachsortierung nötig)
+      var sorted = tracks.slice().sort(function(a, b) {
+        var ac = (a.album || '').localeCompare(b.album || '');
+        if (ac !== 0) return ac;
+        var dd = (a.disc_number || 0) - (b.disc_number || 0);
+        if (dd !== 0) return dd;
+        return (a.track_number || 0) - (b.track_number || 0);
+      });
+      for (var i = 0; i < sorted.length && trackResults.length < limit; i++) {
+        var t = sorted[i];
         if ((t.name || '').toLowerCase().indexOf(query) === -1) { continue; }
         trackResults.push({
           id: t.id, name: t.name, artist: t.artist, album: t.album,
