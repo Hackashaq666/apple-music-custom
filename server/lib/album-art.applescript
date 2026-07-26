@@ -11,16 +11,13 @@ on run argv
 		end try
 		repeat with t in matchedTracks
 			try
-				set a to ""
-				try
-					set a to album artist of t
-				end try
-				if a is "" then
-					try
-						set a to artist of t
-					end try
-				end if
-				if a is artistName then
+				-- Custom addition: "Various Artists" is our pseudo-artist for
+				-- compilation albums (see buildAlbums() / VARIOUS_ARTISTS in
+				-- app.js). No individual track carries that tag literally, so
+				-- for this case we don't match-and-stop on a single track like
+				-- the normal path below — we keep scanning until we find any
+				-- track of this album that actually has artwork.
+				if artistName is "Various Artists" then
 					set artList to artworks of t
 					if (count of artList) > 0 then
 						set artData to data of item 1 of artList
@@ -29,11 +26,34 @@ on run argv
 						set eof of fileRef to 0
 						write artData to fileRef
 						close access fileRef
-						-- Convert to JPEG using sips
 						do shell script "sips -s format jpeg " & quoted form of tmpPath & " --out " & quoted form of outPath & " > /dev/null 2>&1; rm -f " & quoted form of tmpPath
 						return "ok"
 					end if
-					exit repeat
+				else
+					set a to ""
+					try
+						set a to album artist of t
+					end try
+					if a is "" then
+						try
+							set a to artist of t
+						end try
+					end if
+					if a is artistName then
+						set artList to artworks of t
+						if (count of artList) > 0 then
+							set artData to data of item 1 of artList
+							set outFile to tmpPath as POSIX file
+							set fileRef to open for access outFile with write permission
+							set eof of fileRef to 0
+							write artData to fileRef
+							close access fileRef
+							-- Convert to JPEG using sips
+							do shell script "sips -s format jpeg " & quoted form of tmpPath & " --out " & quoted form of outPath & " > /dev/null 2>&1; rm -f " & quoted form of tmpPath
+							return "ok"
+						end if
+						exit repeat
+					end if
 				end if
 			end try
 		end repeat

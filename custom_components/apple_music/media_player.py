@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 
 from homeassistant.components.media_player import (
     BrowseMedia,
+    MediaClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    SearchMedia,
+    SearchMediaQuery,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -22,7 +25,7 @@ import re
 from urllib.parse import quote as urlquote
 
 from . import AppleMusicCoordinator
-from .browse_media import async_browse_media
+from .browse_media import async_browse_media, _thumb, _track_thumb, slugify
 from .const import BROWSE_SEP, CONF_HOST, CONF_PORT, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +48,7 @@ MAIN_PLAYER_FEATURES = (
     | MediaPlayerEntityFeature.SEEK
     | MediaPlayerEntityFeature.PLAY_MEDIA
     | MediaPlayerEntityFeature.BROWSE_MEDIA
+    | MediaPlayerEntityFeature.SEARCH_MEDIA
 )
 
 # Features for AirPlay speaker entities
@@ -183,8 +187,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         return r if r in ("off", "all", "one") else "off"
 
     # ── Progress tracking ─────────────────────────────────────────────────────
-    # HA uses media_position + media_position_updated_at to interpolate the
-    # progress bar live between polls — no need to update every second.
 
     @property
     def media_position(self) -> float | None:
@@ -223,7 +225,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         await self.coordinator.async_send_command("PUT", "/stop")
 
     async def async_media_next_track(self) -> None:
-        # Optimistically clear track info so UI shows loading state instantly
         self._optimistic_state("playing")
         await self.coordinator.async_send_command("PUT", "/next")
 
@@ -233,7 +234,6 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
 
     async def async_set_volume_level(self, volume: float) -> None:
         self._optimistic_volume = float(volume)
-        # Patch coordinator data immediately so polls don't snap the slider back
         if self.coordinator.data:
             self.coordinator.data = dict(self.coordinator.data)
             self.coordinator.data["volume"] = int(volume * 100)
@@ -276,12 +276,14 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             )
             await self.coordinator.async_request_refresh()
             return
+
         elif parts[0] == "playlist" and len(parts) == 2:
             await self.coordinator.async_send_command(
                 "PUT", f"/playlists/{parts[1]}/play"
             )
             await self.coordinator.async_request_refresh()
             return
+
         elif parts[0] == "album" and len(parts) == 3:
             artist_id = parts[1]
             album_id  = parts[2]
@@ -291,23 +293,15 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             )
             await self.coordinator.async_request_refresh()
             return
-        elif parts[0] == "track" and len(parts) == 2:
-            # Optimistically update state so UI feels instant
-            track_id = parts[1]
-            current = dict(self.coordinator.data or {})
-            current["player_state"] = "playing"
-            current["id"] = track_id
-            current["player_position"] = 0
-            current["position_timestamp"] = None
-            self.coordinator.async_set_updated_data(current)
 
-            # Fire command without blocking — notify.py will push the real state via SSE
-            self.hass.async_create_task(
-                self.coordinator.async_send_command(
-                    "PUT", f"/library/tracks/{track_id}/play"
-                )
+        elif parts[0] == "track" and len(parts) >= 2:
+            track_id = parts[1]
+            await self.coordinator.async_send_command(
+                "PUT", f"/library/tracks/{track_id}/play"
             )
+            await self.coordinator.async_request_refresh()
             return
+
         else:
             _LOGGER.warning("Unrecognised media_id for play_media: %s", media_id)
             return
@@ -347,6 +341,120 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             media_content_id or "root",
             self,
         )
+
+    # ── Search ───────────────────────────────────────────────────────────────
+    #
+    # Maps HA's SearchMediaQuery onto the server's /library/search endpoint
+    # (server/app.js), which returns track/artist/album/playlist matches.
+    # media_content_id values follow the exact same "type||..." convention used
+    # in browse_media.py / async_play_media() above, so search results play the
+    # same way browsed items do.
+    #
+    # Assumption: when media_filter_classes contains more than one class (or is
+    # unset), we ask the server for "all" categories rather than issuing several
+    # requests, since the server already does this in one pass.
+    # Edge case: an empty/whitespace-only search_query returns no results instead
+    # of hitting the server, mirroring the server's own 400 on a missing q param.
+    async def async_search_media(self, query: SearchMediaQuery) -> SearchMedia:
+        """Search the Apple Music library via the Mac server."""
+        search_query = (query.search_query or "").strip()
+        if not search_query:
+            return SearchMedia(result=[])
+
+        media_type_param = "all"
+        if query.media_filter_classes and len(query.media_filter_classes) == 1:
+            media_type_param = {
+                MediaClass.ARTIST: "artist",
+                MediaClass.ALBUM: "album",
+                MediaClass.TRACK: "track",
+                MediaClass.PLAYLIST: "playlist",
+            }.get(next(iter(query.media_filter_classes)), "all")  # HA 2026.6: media_filter_classes is a set, not a list
+
+        path = (
+            f"/library/search?q={urlquote(search_query, safe='')}"
+            f"&media_type={media_type_param}"
+        )
+        data = await self.coordinator.async_get(path) or {}
+
+        S = BROWSE_SEP
+        hass = self.coordinator.hass
+        base_url = self.coordinator.base_url
+        results: list[BrowseMedia] = []
+
+        for t in data.get("tracks", []) or []:
+            artist = t.get("albumArtist") or t.get("artist") or ""
+            album = t.get("album") or ""
+            title = f"{t.get('name', '')} — {artist}" if artist else t.get("name", "")
+            cid = f"track{S}{t.get('id', '')}{S}{artist}{S}{album}"
+            # Reuse the same thumbnail helper as the browse tree so the
+            # artwork cache built at server startup is hit correctly.
+            thumbnail = _track_thumb(t, hass, base_url, self, S)
+            results.append(
+                BrowseMedia(
+                    title=title,
+                    media_class=MediaClass.TRACK,
+                    media_content_type=MediaType.TRACK,
+                    media_content_id=cid,
+                    can_play=True,
+                    can_expand=False,
+                    thumbnail=thumbnail,
+                )
+            )
+
+        for a in data.get("artists", []) or []:
+            name = a.get("name", "")
+            cid = f"artist{S}{name}"
+            static_file = f"artist-{slugify(name)}.jpg"
+            thumbnail = _thumb(hass, base_url, static_file, self, MediaType.ARTIST, cid)
+            results.append(
+                BrowseMedia(
+                    title=name,
+                    media_class=MediaClass.ARTIST,
+                    media_content_type=MediaType.ARTIST,
+                    media_content_id=cid,
+                    can_play=True,
+                    can_expand=True,
+                    thumbnail=thumbnail,
+                )
+            )
+
+        for al in data.get("albums", []) or []:
+            artist = al.get("artist", "")
+            al_name = al.get("name", "")
+            title = f"{al_name} — {artist}" if artist else al_name
+            cid = f"album{S}{artist}{S}{al_name}"
+            static_file = f"{slugify(artist + '||' + al_name)}.jpg"
+            thumbnail = _thumb(hass, base_url, static_file, self, MediaType.ALBUM, cid)
+            results.append(
+                BrowseMedia(
+                    title=title,
+                    media_class=MediaClass.ALBUM,
+                    media_content_type=MediaType.ALBUM,
+                    media_content_id=cid,
+                    can_play=True,
+                    can_expand=True,
+                    thumbnail=thumbnail,
+                )
+            )
+
+        for pl in data.get("playlists", []) or []:
+            pl_name = pl.get("name", "")
+            cid = f"playlist{S}{pl.get('id', '')}"
+            static_file = f"playlist-{slugify(pl_name)}.jpg"
+            thumbnail = _thumb(hass, base_url, static_file, self, MediaType.PLAYLIST, cid)
+            results.append(
+                BrowseMedia(
+                    title=pl_name,
+                    media_class=MediaClass.PLAYLIST,
+                    media_content_type=MediaType.PLAYLIST,
+                    media_content_id=cid,
+                    can_play=True,
+                    can_expand=True,
+                    thumbnail=thumbnail,
+                )
+            )
+
+        return SearchMedia(result=results)
 
 
 def _map_airplay_kind(device_data: dict) -> str:
@@ -400,8 +508,6 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
         return AIRPLAY_FEATURES
 
     def _get_device_data(self) -> dict | None:
-        """Find this speaker's current data from the coordinator's airplay cache."""
-        # AirPlay state is fetched separately; we store it as extra data on the coordinator
         return getattr(self.coordinator, "_airplay_devices", {}).get(self._device_id)
 
     @property
@@ -470,7 +576,6 @@ class AirPlaySpeaker(CoordinatorEntity, MediaPlayerEntity):
     async def async_set_volume_level(self, volume: float) -> None:
         volume = float(volume)
         self._optimistic_volume = volume
-        # Patch the coordinator cache immediately so polls don't snap the slider back
         devices = getattr(self.coordinator, "_airplay_devices", {})
         if self._device_id in devices:
             devices[self._device_id] = dict(devices[self._device_id])
