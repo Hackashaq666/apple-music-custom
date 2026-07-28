@@ -193,7 +193,8 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
                     f"track{S}{t['id']}", True, False,
                     thumbnail=_track_thumb(t, hu, bu, entity, S))
                  for t in data.get("tracks", [])]
-        return _node(media_content_id, MediaClass.PLAYLIST, MediaType.PLAYLIST,
+        pl_name = data.get("playlist", pl_id)
+        return _node(pl_name, MediaClass.PLAYLIST, MediaType.PLAYLIST,
                      f"playlist{S}{pl_id}", False, True, kids)
 
     raise BrowseError(f"Unknown media_content_id: {media_content_id}")
