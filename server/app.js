@@ -1161,7 +1161,15 @@ app.get('/playlists/:id/tracks', function(req, res) {
                       albumArtist: albArtist, album: album });
       }
     }
-    res.json({ tracks: tracks });
+    var plName = '';
+    getPlaylistsCached(function(err, playlists) {
+      if (!err && playlists) {
+        for (var i = 0; i < playlists.length; i++) {
+          if (String(playlists[i].id) === String(plId)) { plName = playlists[i].name; break; }
+        }
+      }
+      res.json({ playlist: plName, tracks: tracks });
+    });
   });
 });
 
