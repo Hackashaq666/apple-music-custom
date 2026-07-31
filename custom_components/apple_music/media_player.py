@@ -270,7 +270,7 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         # (z. B. "The Best Of David Bowie 1980/1987")
         parts = re.split(r'\|\|+', media_id)
 
-        if parts[0] == "artist" and len(parts) == 2:
+        if parts[0] == "artist" and len(parts) >= 2:
             artist_id = parts[1]
             _LOGGER.debug("Playing artist: %s", artist_id)
             await self.coordinator.async_send_command(
@@ -279,14 +279,14 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             await self.coordinator.async_request_refresh()
             return
 
-        elif parts[0] == "playlist" and len(parts) == 2:
+        elif parts[0] == "playlist" and len(parts) >= 2:
             await self.coordinator.async_send_command(
                 "PUT", f"/playlists/{parts[1]}/play"
             )
             await self.coordinator.async_request_refresh()
             return
 
-        elif parts[0] == "album" and len(parts) == 3:
+        elif parts[0] == "album" and len(parts) >= 3:
             artist_id = parts[1]
             album_id  = parts[2]
             _LOGGER.debug("Playing album: %s / %s", artist_id, album_id)
@@ -409,9 +409,10 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             display_artist = t.get("artist") or t.get("albumArtist") or ""
             # Für content_id und Artwork: albumArtist (für korrektes Album-Grouping und Cover-Cache)
             album_artist   = t.get("albumArtist") or t.get("artist") or ""
-            album = t.get("album") or ""
+            album     = t.get("album") or ""
+            media_kind = t.get("mediaKind") or "song"
             title = f"{t.get('name', '')} — {display_artist}" if display_artist else t.get("name", "")
-            cid = f"track{S}{t.get('id', '')}{S}{album_artist}{S}{album}"
+            cid = f"track{S}{t.get('id', '')}{S}{album_artist}{S}{album}{S}{media_kind}"
             # Reuse the same thumbnail helper as the browse tree so the
             # artwork cache built at server startup is hit correctly.
             thumbnail = _track_thumb(t, hass, base_url, self, S)
@@ -428,8 +429,9 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             )
 
         for a in data.get("artists", []) or []:
-            name = a.get("name", "")
-            cid = f"artist{S}{name}"
+            name  = a.get("name", "")
+            ar_mk = a.get("mediaKind", "song")
+            cid   = f"artist{S}{name}{S}{ar_mk}"
             static_file = f"artist-{slugify(name)}.jpg"
             thumbnail = _thumb(hass, base_url, static_file, self, MediaType.ARTIST, cid)
             results.append(
@@ -445,10 +447,11 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             )
 
         for al in data.get("albums", []) or []:
-            artist = al.get("artist", "")
-            al_name = al.get("name", "")
-            title = f"{al_name} — {artist}" if artist else al_name
-            cid = f"album{S}{artist}{S}{al_name}"
+            artist   = al.get("artist", "")
+            al_name  = al.get("name", "")
+            al_mk    = al.get("mediaKind", "song")
+            title    = f"{al_name} — {artist}" if artist else al_name
+            cid      = f"album{S}{artist}{S}{al_name}{S}{al_mk}"
             static_file = f"{slugify(artist + '||' + al_name)}.jpg"
             thumbnail = _thumb(hass, base_url, static_file, self, MediaType.ALBUM, cid)
             results.append(
@@ -465,7 +468,8 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
 
         for pl in data.get("playlists", []) or []:
             pl_name = pl.get("name", "")
-            cid = f"playlist{S}{pl.get('id', '')}"
+            pl_mk   = pl.get("mediaKind", "song")
+            cid     = f"playlist{S}{pl.get('id', '')}{S}{pl_mk}"
             static_file = f"playlist-{slugify(pl_name)}.jpg"
             thumbnail = _thumb(hass, base_url, static_file, self, MediaType.PLAYLIST, cid)
             results.append(
