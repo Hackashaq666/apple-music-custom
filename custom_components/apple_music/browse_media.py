@@ -35,8 +35,9 @@ def _node(title, mc, mt, cid, play, expand, children=None, thumbnail=None):
                        children=children, thumbnail=thumbnail)
 
 def _track_cid(t, S):
-    """media_content_id für einen Track: track||id||artist||album"""
-    return f"track{S}{t.get('id','')}{S}{t.get('albumArtist') or t.get('artist','')}{S}{t.get('album','')}"
+    """media_content_id für einen Track: track||id||artist||album||mediaKind"""
+    mk = t.get('mediaKind', 'song')
+    return f"track{S}{t.get('id','')}{S}{t.get('albumArtist') or t.get('artist','')}{S}{t.get('album','')}{S}{mk}"
 
 def _track_thumb(t, hu, bu, entity, S):
     """Artwork für einen Track aus albumArtist + album aufbauen."""
@@ -65,7 +66,7 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
     if media_content_id == BROWSE_PLAYLISTS:
         data = await C.async_get("/playlists") or {}
         kids = [_node(pl["name"], MediaClass.PLAYLIST, MediaType.PLAYLIST,
-                      f"playlist{S}{pl['id']}", True, True,
+                      f"playlist{S}{pl['id']}{S}{pl.get('mediaKind','song')}", True, True,
                       thumbnail=_thumb(hu, bu,
                                        f"playlist-{slugify(pl['name'])}.jpg",
                                        entity, MediaType.PLAYLIST,
@@ -159,11 +160,11 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
     # ── Artist → seine Alben ──────────────────────────────────────────────────
     parts = media_content_id.split(S)
 
-    if parts[0] == "artist" and len(parts) == 2:
+    if parts[0] == "artist" and len(parts) >= 2:
         data = await C.async_get(f"/library/artists/{q(parts[1])}/albums") or {}
         an = data.get("artist", parts[1])
         kids = [_node(al["name"], MediaClass.ALBUM, MediaType.ALBUM,
-                      f"album{S}{an}{S}{al['name']}", True, True,
+                      f"album{S}{an}{S}{al['name']}{S}{al.get('mediaKind','song')}", True, True,
                       thumbnail=_thumb(hu, bu, f"{slugify(an + '||' + al['name'])}.jpg",
                                        entity, MediaType.ALBUM,
                                        f"album{S}{slugify(an)}{S}{al['id']}"))
@@ -172,25 +173,25 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
                      f"artist{S}{an}", False, True, kids)
 
     # ── Album → seine Tracks ──────────────────────────────────────────────────
-    if parts[0] == "album" and len(parts) == 3:
+    if parts[0] == "album" and len(parts) >= 3:
         data = await C.async_get(f"/library/albums/{q(parts[1])}/{q(parts[2])}/tracks") or {}
         kids = [_node(
                     f"{t['name']} — {t['artist']}" if t.get("artist") else t["name"],
                     MediaClass.TRACK, MediaType.TRACK,
-                    f"track{S}{t['id']}", True, False,
+                    _track_cid(t, S), True, False,
                     thumbnail=_track_thumb(t, hu, bu, entity, S))
                 for t in data.get("tracks", [])]
         return _node(data.get("album", parts[2]), MediaClass.ALBUM, MediaType.ALBUM,
-                     f"album{S}{parts[1]}{S}{parts[2]}", False, True, kids)
+                     f"album{S}{parts[1]}{S}{parts[2]}", False, True, kids)  # parts[3]=mediaKind ignoriert beim Drill-down
 
     # ── Playlist → ihre Tracks ───────────────────────────────────────────────
-    if parts[0] == "playlist" and len(parts) == 2:
+    if parts[0] == "playlist" and len(parts) >= 2:
         pl_id = parts[1]
         data  = await C.async_get(f"/playlists/{q(pl_id)}/tracks") or {}
         kids  = [_node(
                     f"{t['name']} — {t.get('albumArtist') or t.get('artist') or ''}".rstrip(" — "),
                     MediaClass.TRACK, MediaType.TRACK,
-                    f"track{S}{t['id']}", True, False,
+                    _track_cid(t, S), True, False,
                     thumbnail=_track_thumb(t, hu, bu, entity, S))
                  for t in data.get("tracks", [])]
         pl_name = data.get("playlist", pl_id)
