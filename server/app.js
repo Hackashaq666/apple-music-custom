@@ -156,13 +156,14 @@ var FETCH_TRACKS_SCRIPT = [
   '  var allTrackNums = lib.tracks.trackNumber();',
   '  var allDiscNums = lib.tracks.discNumber();',
   '  var allDurations = lib.tracks.duration();',
+  '  var allMediaKinds = lib.tracks.mediaKind();',
   '  var allCompilations = lib.tracks.compilation();',
   '  for (var i = 0; i < allIDs.length; i++) {',
   '    var kind = allKinds[i] || "";',
   '    if (kind !== "song" && kind !== "music video" && kind !== "" && kind !== undefined) { continue; }',
   '    var id = allIDs[i] || "";',
   '    if (!id) { continue; }',
-  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true });',
+  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true, mediaKind: allMediaKinds[i] || "song" });',
   '  }',
   '} catch(bulkErr) {',
   '  try {',
@@ -174,7 +175,7 @@ var FETCH_TRACKS_SCRIPT = [
   '        if (kind !== "song" && kind !== "music video" && kind !== "" && kind !== undefined) { continue; }',
   '        var id = ""; try { id = t.persistentID(); } catch(e) {}',
   '        if (!id) { continue; }',
-  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })() });',
+  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })(), mediaKind: (function(){ try { return t.mediaKind() || "song"; } catch(e) { return "song"; } })() });',
   '      } catch(e) {}',
   '    }',
   '  } catch(e) {}',
@@ -459,19 +460,29 @@ function buildArtists(tracks, offset, limit) {
 }
 
 function buildAlbumsByArtist(tracks, artistName) {
-  var seen   = {};
-  var albums = [];
+  var seen      = {};
+  var albumKinds = {}; // track mediaKinds per album to detect video-only albums
+  var albums    = [];
   for (var i = 0; i < tracks.length; i++) {
     var t           = tracks[i];
     var albumArtist = t.albumArtist || t.artist || '';
     var artist      = t.artist || '';
     if (albumArtist !== artistName && artist !== artistName) { continue; }
     var name = t.album;
-    if (name && !seen[name]) {
+    if (!name) { continue; }
+    if (!albumKinds[name]) albumKinds[name] = [];
+    albumKinds[name].push(t.mediaKind || 'song');
+    if (!seen[name]) {
       seen[name] = true;
       albums.push({ id: slugify(artistName + '||' + name), name: name });
     }
   }
+  // Markiere Video-only-Alben
+  albums.forEach(function(al) {
+    var kinds = albumKinds[al.name] || [];
+    al.mediaKind = (kinds.length > 0 && kinds.every(function(k) { return k === 'music video'; }))
+      ? 'music video' : 'song';
+  });
   albums.sort(function(a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
   return { artist: artistName, albums: albums };
 }
@@ -1091,10 +1102,13 @@ app.get('/playlists', function(req, res) {
       var tab = line.indexOf('\t');
       if (tab === -1) { continue; }
       var id   = line.substring(0, tab).trim();
-      var name = line.substring(tab + 1).trim();
+      var rest = line.substring(tab + 1).trim();
+      var tab2 = rest.indexOf('\t');
+      var name = tab2 !== -1 ? rest.substring(0, tab2).trim() : rest;
+      var mediaKind = tab2 !== -1 ? rest.substring(tab2 + 1).trim() : 'song';
       // Interne HA-Hilfsplaylists ausblenden
       if (id && name && !name.startsWith('HA_Play_')) {
-        playlists.push({ id: id, name: name });
+        playlists.push({ id: id, name: name, mediaKind: mediaKind });
       }
     }
     res.json({ playlists: playlists });
@@ -1156,9 +1170,10 @@ app.get('/playlists/:id/tracks', function(req, res) {
       var artist    = parts[2].trim();
       var albArtist = parts[3].trim();
       var album     = parts[4].trim();
+      var mediaKind = parts.length > 5 ? parts[5].trim() : 'song';
       if (id) {
         tracks.push({ id: id, name: name, artist: artist,
-                      albumArtist: albArtist, album: album });
+                      albumArtist: albArtist, album: album, mediaKind: mediaKind });
       }
     }
     var plName = '';
@@ -1455,7 +1470,7 @@ app.get('/library/search', function(req, res) {
         if ((t.name || '').toLowerCase().indexOf(query) === -1) { continue; }
         trackResults.push({
           id: t.id, name: t.name, artist: t.artist, album: t.album,
-          albumArtist: t.albumArtist
+          albumArtist: t.albumArtist, mediaKind: t.mediaKind || 'song'
         });
       }
     }
@@ -1463,16 +1478,41 @@ app.get('/library/search', function(req, res) {
     var artistResults = [];
     if (wantArtists) {
       if (!artistsCache) { artistsCache = buildArtists(tracks, 0, 999999); }
+      // Prüfen ob Künstler nur Musikvideos hat (für Video-Filter in der Karte)
+      var artistKinds = {};
+      tracks.forEach(function(t) {
+        var a = t.albumArtist || t.artist || '';
+        if (!artistKinds[a]) artistKinds[a] = [];
+        artistKinds[a].push(t.mediaKind || 'song');
+      });
       artistResults = artistsCache.artists
         .filter(function(a) { return a.name.toLowerCase().indexOf(query) !== -1; })
+        .map(function(a) {
+          var kinds = artistKinds[a.name] || [];
+          var allVideos = kinds.length > 0 && kinds.every(function(k) { return k === 'music video'; });
+          return { id: a.id, name: a.name, mediaKind: allVideos ? 'music video' : 'song' };
+        })
         .slice(0, limit);
     }
 
     var albumResults = [];
     if (wantAlbums) {
       if (!albumsCache) { albumsCache = buildAlbums(tracks, 0, 999999); }
+      // Prüfen ob Album nur Musikvideos enthält (für Video-Filter in der Karte)
+      var trackMap = {};
+      tracks.forEach(function(t) {
+        var key = (t.albumArtist || t.artist || '') + '||' + (t.album || '');
+        if (!trackMap[key]) trackMap[key] = [];
+        trackMap[key].push(t.mediaKind || 'song');
+      });
       albumResults = albumsCache.albums
         .filter(function(al) { return al.name.toLowerCase().indexOf(query) !== -1; })
+        .map(function(al) {
+          var key = al.artist + '||' + al.name;
+          var kinds = trackMap[key] || [];
+          var allVideos = kinds.length > 0 && kinds.every(function(k) { return k === 'music video'; });
+          return { id: al.id, name: al.name, artist: al.artist, mediaKind: allVideos ? 'music video' : 'song' };
+        })
         .slice(0, limit);
     }
 
