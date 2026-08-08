@@ -17,7 +17,7 @@ from homeassistant.components.media_player import (
     SearchMediaQuery,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -69,23 +69,49 @@ async def async_setup_entry(
 
     entities: list[MediaPlayerEntity] = [AppleMusicPlayer(coordinator, entry)]
 
-    # Discover AirPlay devices and add each as a separate media player
-    # Retry a few times in case the server is still starting up
-    airplay_data = None
+    # AirPlay-Geraete suchen. Alle Versuche nutzen und Ergebnisse zusammenfuehren:
+    # Music.app meldet beim Start oft erst nach ein paar Sekunden alle Geraete.
+    # Ein Abbruch beim ersten Treffer wuerde spaeter erscheinende Geraete uebergehen.
+    discovered: dict[str, dict] = {}
     for attempt in range(3):
         airplay_data = await coordinator.async_get("/airplay_devices")
-        if airplay_data and airplay_data.get("airplay_devices"):
-            break
-        await asyncio.sleep(2)
+        for device in (airplay_data or {}).get("airplay_devices", []):
+            discovered.setdefault(device["id"], device)
+        if attempt < 2:
+            await asyncio.sleep(2)
 
-    if airplay_data:
-        for device in airplay_data.get("airplay_devices", []):
+    if discovered:
+        for device in discovered.values():
             _LOGGER.debug("Adding AirPlay entity: %s", device.get("name"))
             entities.append(AirPlaySpeaker(coordinator, entry, device))
     else:
         _LOGGER.warning("No AirPlay devices found during setup")
 
     async_add_entities(entities, update_before_add=True)
+
+    # AirPlay-Geraete tauchen erst auf, wenn sie eingeschaltet und im Netz sind.
+    # Ohne Nachzuegler-Erkennung bliebe ein Geraet, das beim Setup fehlte, bis zum
+    # naechsten Reload der Integration als 'unavailable' in der Registry stehen.
+    known_ids: set[str] = set(discovered)
+
+    @callback
+    def _async_add_new_airplay_devices() -> None:
+        # Legt Entities fuer AirPlay-Geraete an, die erst spaeter auftauchen.
+        devices = getattr(coordinator, "_airplay_devices", {}) or {}
+        new = [d for dev_id, d in devices.items() if dev_id not in known_ids]
+        if not new:
+            return
+        for device in new:
+            known_ids.add(device["id"])
+            _LOGGER.debug("Adding late AirPlay entity: %s", device.get("name"))
+        async_add_entities(
+            [AirPlaySpeaker(coordinator, entry, d) for d in new],
+            update_before_add=True,
+        )
+
+    entry.async_on_unload(
+        coordinator.async_add_listener(_async_add_new_airplay_devices)
+    )
 
 
 # ── Main Apple Music player ───────────────────────────────────────────────────
