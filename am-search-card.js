@@ -43,8 +43,11 @@ class AmSearchCard extends HTMLElement {
     this._built       = false;
     this._loading     = false;
     this._error       = '';
-    this._includeVideos  = true;   // Musikvideos in Suchergebnissen anzeigen
+    this._includeVideos  = false;  // Frontend-Haken 'Musikvideos inkludieren'
+    this._lastPlayHadVideo = false; // unterdrueckt always_off bei Videos
     this._progressTimer  = null;  // setInterval für live Fortschrittsanzeige
+    this._amListSignature = null; // erkennt Änderungen der AirPlay-Player-Liste
+
     this._seekOverride   = null;  // sofortiges visuelles Feedback nach Seek
     this._playingContext = null;  // track | album | artist | playlist
     // Navigation-Stack: jeder Eintrag = { title, items, isSearch? }
@@ -55,8 +58,32 @@ class AmSearchCard extends HTMLElement {
 
   setConfig(config) {
     if (!config.entity) throw new Error('am-search-card: "entity" ist erforderlich');
-    this._config = { title: 'Apple Music', ...config };
+    // Musikvideos sind standardmaessig nicht erlaubt
+    this._config = { title: 'Apple Music', allow_music_videos: false, volume_control: 'slider', onscreen_keyboard: false, ...config };
     this._build();
+    // Haken folgt der Konfiguration: erlaubt -> gesetzt, sonst ausgeblendet.
+    // Muss hier stehen, da _build() nur einmal laeuft.
+    this._includeVideos = !!this._config.allow_music_videos;
+    const toggle = this.shadowRoot?.querySelector('.video-toggle');
+    if (toggle) toggle.style.display = this._includeVideos ? '' : 'none';
+    const videoBox = this.shadowRoot?.querySelector('.include-videos-cb');
+    if (videoBox) videoBox.checked = this._includeVideos;
+    // Lautstaerke: Regler oder Schritt-Tasten
+    // Bei eigener Tastatur die System-Tastatur unterdruecken
+    const searchInput = this.shadowRoot?.querySelector('.search-input');
+    if (searchInput) {
+      if (this._config.onscreen_keyboard) searchInput.setAttribute('inputmode', 'none');
+      else searchInput.removeAttribute('inputmode');
+    }
+    if (!this._config.onscreen_keyboard) this._showKeyboard(false);
+
+    const useSteps = this._config.volume_control === 'buttons';
+    const sldr  = this.shadowRoot?.querySelector('.np-vol-slider');
+    const steps = this.shadowRoot?.querySelector('.np-vol-steps');
+    if (sldr)  sldr.style.display  = useSteps ? 'none' : '';
+    if (steps) steps.style.display = useSteps ? '' : 'none';
+    // always_off sofort durchsetzen wenn Config sich ändert
+    if (this._hass) this._enforceAlwaysOff();
   }
 
   set hass(hass) {
@@ -67,6 +94,13 @@ class AmSearchCard extends HTMLElement {
     if (!id) return;
     const ns = hass?.states?.[id];
     const os = prev?.states?.[id];
+    // AirPlay-Panel aktualisieren
+    this._populateAMPlayers();
+    // always_off kontinuierlich durchsetzen wenn Player spielt
+    if (ns?.state === 'playing' && ns?.state !== os?.state) {
+      this._enforceAlwaysOff();
+    }
+
     if (ns?.state !== os?.state ||
         ns?.attributes?.media_title !== os?.attributes?.media_title ||
         ns?.attributes?.entity_picture !== os?.attributes?.entity_picture ||
@@ -89,12 +123,23 @@ class AmSearchCard extends HTMLElement {
     return document.createElement('am-search-card-editor');
   }
 
-  // Default config when card is added via the card picker
+  // Erkennt die AM-Haupt-Entity automatisch:
+  // Alle apple_music-Entities → Entity mit höchsten supported_features = Controller
+  // (Haupt-Player: ~4641343, AirPlay-Sub-Entities: 388)
   static getStubConfig(hass) {
-    const first = Object.keys(hass?.states || {}).find(
-      (id) => id.startsWith('media_player.')
-    );
-    return { entity: first || 'media_player.am_apple_music', title: 'Apple Music' };
+    const amEntities = Object.values(hass?.entities || {})
+      .filter(e => e.platform === 'apple_music' && e.entity_id.startsWith('media_player.'));
+    let mainEntity = null;
+    let maxFeatures = -1;
+    for (const e of amEntities) {
+      const features = hass.states?.[e.entity_id]?.attributes?.supported_features || 0;
+      if (features > maxFeatures) { maxFeatures = features; mainEntity = e; }
+    }
+    // Fallback: erste gefundene AM-Entity oder Standardname
+    const entityId = mainEntity?.entity_id
+      || amEntities[0]?.entity_id
+      || 'media_player.am_apple_music';
+    return { entity: entityId, title: 'Apple Music' };
   }
 
   // Standard HA 2026.6: defines default/min/max size in the sections grid (12 cols per section).
@@ -142,8 +187,14 @@ class AmSearchCard extends HTMLElement {
       input.value = '';
       updateClearBtn();
       clearTimeout(this._debounce);
-      this._navStack = [];
-      this._renderView();
+      // Gleiche Logik wie beim Leeren per Tastatur: bei aktivem Playlist-Filter
+      // die vollstaendige Playlist-Liste zeigen statt eine leere Ansicht.
+      if (this._filter === 'playlist') {
+        this._loadAllPlaylists();
+      } else {
+        this._navStack = [];
+        this._renderView();
+      }
       input.focus();
     });
 
@@ -167,6 +218,11 @@ class AmSearchCard extends HTMLElement {
       clearTimeout(this._debounce);
       const q = input.value.trim();
       if (q) this._doSearch(q);
+    });
+
+    // Bildschirmtastatur oeffnen, sobald das Suchfeld angetippt wird
+    input.addEventListener('focus', () => {
+      if (this._config.onscreen_keyboard) this._showKeyboard(true);
     });
 
     // Video-Toggle Checkbox
@@ -254,6 +310,20 @@ class AmSearchCard extends HTMLElement {
       });
     });
 
+    // Lautstaerke in Schritten – Alternative zum Regler, besser am Tablet treffbar
+    const stepVolume = (delta) => {
+      if (!this._hass) return;
+      const st  = this._hass.states?.[this._config.entity];
+      const cur = st?.attributes?.volume_level ?? 0.5;
+      const next = Math.min(1, Math.max(0, Math.round((cur + delta) * 100) / 100));
+      this._hass.callService('media_player', 'volume_set', {
+        entity_id: this._config.entity,
+        volume_level: next,
+      });
+    };
+    s.querySelector('.np-vol-down').addEventListener('click', () => stepVolume(-0.05));
+    s.querySelector('.np-vol-up').addEventListener('click',   () => stepVolume(0.05));
+
     // Mute toggle – via volume_set (zuverlässig, da volume_mute keine HA-State-Änderung auslöst)
     // Vorherige Lautstärke wird clientseitig gespeichert und bei Demute wiederhergestellt.
     s.querySelector('.np-vol-btn').addEventListener('click', () => {
@@ -299,6 +369,24 @@ class AmSearchCard extends HTMLElement {
 
     s.querySelector('.play-all-btn').addEventListener('click', () => this._playAll());
 
+    // Gesamte Kopfflaeche schaltet das Panel um. Safari reagiert bei <summary>
+    // sonst nur auf den Textinhalt, nicht auf Rahmen und Innenabstand.
+    const amBtn = s.querySelector('.am-player-btn');
+    amBtn?.addEventListener('click', (e) => {
+      e.preventDefault();
+      const panel = s.querySelector('.am-player-panel');
+      if (panel) panel.open = !panel.open;
+    });
+
+    // AirPlay Panel: Klick außerhalb schließt
+    document.addEventListener('click', (e) => {
+      const panel = this.shadowRoot?.querySelector('.am-player-panel');
+      if (panel?.open) {
+        const path = e.composedPath();
+        if (!path.includes(panel)) panel.open = false;
+      }
+    });
+
     // More Info Dialog
     s.querySelector('.more-info-btn').addEventListener('click', () => {
       this.dispatchEvent(new CustomEvent('hass-more-info', {
@@ -315,10 +403,214 @@ class AmSearchCard extends HTMLElement {
     });
   }
 
+  // ── AirPlay Player Panel ─────────────────────────────────────────────────────
+  _populateAMPlayers() {
+    const panel = this.shadowRoot?.querySelector('.am-player-panel');
+    const list  = this.shadowRoot?.querySelector('.am-player-list');
+    const btn   = this.shadowRoot?.querySelector('.am-player-btn');
+    if (!panel || !this._hass) return;
+    const base      = this._config.entity;
+    const playerCfg = this._config.players || {};
+
+    const platform = this._hass.entities?.[base]?.platform;
+    const players = platform
+      ? Object.values(this._hass.entities)
+          .filter(e => e.platform === platform && e.entity_id !== base && e.entity_id.startsWith('media_player.'))
+          .map(e => e.entity_id).sort()
+      : [];
+
+    const displayName = (e) => {
+      const cfg = playerCfg[e] || {};
+      if (cfg.name) return cfg.name;
+      return this._hass.states[e]?.attributes?.friendly_name || e;
+    };
+    // isOn: state !== 'off' = via HA aktiv
+    const isOn = (e) => {
+      const st = this._hass.states[e]?.state;
+      return !!st && st !== 'off' && st !== 'unavailable' && st !== 'unknown';
+    };
+
+    const available = players.filter(e => {
+      const cfg = playerCfg[e] || {};
+      if (cfg.hidden || cfg.always_off) return false;
+      const st = this._hass.states[e]?.state;
+      return st && st !== 'unavailable' && st !== 'unknown';
+    });
+    if (available.length === 0) { panel.classList.add('hidden'); return; }
+    panel.classList.remove('hidden');
+
+    // Button-Label – direkt aus aktuellem State, kein Cache
+    const activeAll = players.filter(e => !(playerCfg[e]?.always_off) && isOn(e));
+    let label;
+    if (activeAll.length === 1) label = displayName(activeAll[0]);
+    else if (activeAll.length > 1) label = `AirPlay (${activeAll.length})`;
+    else label = '---';
+    btn.textContent = `🔊 ${label}`;
+    btn.classList.toggle('active', activeAll.length > 0);
+
+    // Liste NUR neu bauen wenn sich die Player-Zusammensetzung ändert.
+    // Ein innerHTML-Rebuild bei jedem hass-Update würde die Checkbox zwischen
+    // Klick und change-Event zerstören – der Klick ginge verloren (passiert
+    // während der Wiedergabe, weil dann laufend Positions-Updates kommen).
+    const signature = available.map(e => e + '|' + displayName(e)).join(',');
+    if (signature !== this._amListSignature) {
+      this._amListSignature = signature;
+      list.innerHTML = available.map(e => `<label class="am-player-item" title="${displayName(e)}">
+        <input type="checkbox" data-entity="${e}"/>
+        <span style="overflow:hidden;text-overflow:ellipsis">${displayName(e)}</span>
+      </label>`).join('');
+
+      list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', (ev) => {
+          ev.stopPropagation();
+          this._hass.callService('media_player', cb.checked ? 'turn_on' : 'turn_off',
+            { entity_id: cb.dataset.entity });
+        });
+      });
+    }
+
+    // Checked-Zustand in-place aktualisieren – DOM bleibt erhalten.
+    // Gerade angeklickte Checkbox nicht überschreiben (sonst springt sie zurück,
+    // bevor HA den neuen State gemeldet hat).
+    list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      if (cb === this.shadowRoot.activeElement) return;
+      const desired = isOn(cb.dataset.entity);
+      if (cb.checked !== desired) cb.checked = desired;
+    });
+  }
+
+  // ── Immer-Aus-Enforcement ────────────────────────────────────────────────────
+  _enforceAlwaysOff() {
+    const playerCfg = this._config.players || {};
+    const alwaysOff = Object.entries(playerCfg)
+      .filter(([, cfg]) => cfg.always_off).map(([entity]) => entity);
+    if (!alwaysOff.length) return;
+
+    // Lautstaerke auf 0 – wirkt auch dann, wenn Music.app das Geraet fuer ein
+    // Musikvideo zwingend als Ziel waehlt und ein turn_off wirkungslos bliebe.
+    alwaysOff.forEach(entity =>
+      this._hass?.callService('media_player', 'volume_set',
+        { entity_id: entity, volume_level: 0 })
+    );
+
+    // Bei Musikvideos kein turn_off: Music.app waehlt das Geraet sofort erneut
+    // aus, das ergaebe nur ein An/Aus-Pendeln.
+    if (this._lastPlayHadVideo) return;
+    // Immer turn_off senden – kein State-Check nötig
+    // (AirPlay-State in HA ist oft 'off' auch wenn Gerät noch Audio empfängt)
+    const turnOff = () => alwaysOff.forEach(entity =>
+      this._hass?.callService('media_player', 'turn_off', { entity_id: entity })
+    );
+    turnOff();
+    setTimeout(turnOff, 2000);
+  }
+
+  // ── Aktive Player nach Play nochmals einschalten ────────────────────────────
+  // Snapshot VOR dem Play – damit wir wissen welche Player gerade aktiv waren
+  _getActivePlayers() {
+    const playerCfg = this._config.players || {};
+    const base      = this._config.entity;
+    const platform  = this._hass?.entities?.[base]?.platform;
+    if (!platform) return [];
+    return Object.values(this._hass.entities || {})
+      .filter(e => e.platform === platform &&
+                   e.entity_id !== base &&
+                   e.entity_id.startsWith('media_player.'))
+      .map(e => e.entity_id)
+      .filter(entity => {
+        const cfg = playerCfg[entity] || {};
+        if (cfg.always_off || cfg.hidden) return false;
+        const st = this._hass?.states?.[entity]?.state;
+        return !!st && st !== 'off' && st !== 'unavailable' && st !== 'unknown';
+      });
+  }
+
+  // Aktive Player nochmals einschalten falls sie nach dem Play nicht spielen
+  // Nur turn_on wenn State nicht aktiv – verhindert unnötige AirPlay-Reconnects
+  _enforceActivePlayers(active) {
+    if (!active?.length) return;
+
+    // Erster Durchgang ohne Pruefung: nach laengerer Pause meldet HA die Player
+    // weiterhin als 'on', obwohl die AirPlay-Verbindung eingeschlafen ist. Ein
+    // turn_on stellt sie wieder her; eine Zustandspruefung wuerde es verhindern.
+    setTimeout(() => active.forEach(entity =>
+      this._hass?.callService('media_player', 'turn_on', { entity_id: entity })
+    ), 1200);
+
+    // Zweiter Durchgang als Absicherung, nur fuer weiterhin inaktive Player
+    setTimeout(() => active.forEach(entity => {
+      const st = this._hass?.states?.[entity]?.state;
+      const isActive = !!st && st !== 'off' && st !== 'unavailable' && st !== 'unknown';
+      if (!isActive) {
+        this._hass?.callService('media_player', 'turn_on', { entity_id: entity });
+      }
+    }), 2800);
+  }
+
+  // ── Bildschirmtastatur ──────────────────────────────────────────────────────
+  // Fuer Tablets, auf denen die System-Tastatur nicht erscheint (z. B. Kiosk-
+  // Browser). Schreibt in das Suchfeld und loest dort ein input-Event aus,
+  // damit die vorhandene Suchlogik unveraendert greift.
+  _buildKeyboard() {
+    const box = this.shadowRoot?.querySelector('.kbd');
+    if (!box || box.dataset.built) return;
+    box.dataset.built = '1';
+
+    const rows = [
+      ['1','2','3','4','5','6','7','8','9','0'],
+      ['q','w','e','r','t','z','u','i','o','p','ü'],
+      ['a','s','d','f','g','h','j','k','l','ö','ä'],
+      ['y','x','c','v','b','n','m','ß','-'],
+    ];
+
+    const input = this.shadowRoot.querySelector('.search-input');
+    const fire  = () => input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const makeKey = (label, cls, onTap) => {
+      const b = document.createElement('button');
+      b.className = 'kbd-key' + (cls ? ' ' + cls : '');
+      b.textContent = label;
+      // mousedown abfangen, damit das Suchfeld den Fokus behaelt
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', (e) => { e.preventDefault(); onTap(); });
+      return b;
+    };
+
+    rows.forEach(keys => {
+      const row = document.createElement('div');
+      row.className = 'kbd-row';
+      keys.forEach(k => row.appendChild(
+        makeKey(k, '', () => { input.value += k; fire(); })
+      ));
+      box.appendChild(row);
+    });
+
+    const last = document.createElement('div');
+    last.className = 'kbd-row';
+    last.appendChild(makeKey('Leerzeichen', 'wide', () => { input.value += ' '; fire(); }));
+    last.appendChild(makeKey('\u232B', '', () => {
+      input.value = input.value.slice(0, -1); fire();
+    }));
+    last.appendChild(makeKey('Fertig', 'done', () => this._showKeyboard(false)));
+    box.appendChild(last);
+  }
+
+  _showKeyboard(show) {
+    const box = this.shadowRoot?.querySelector('.kbd');
+    if (!box) return;
+    if (show) this._buildKeyboard();
+    box.classList.toggle('hidden', !show);
+  }
+
   // ── Musikvideo-Filter ────────────────────────────────────────────────────────
   // mediaKind ist Teil der content_id: track||id||artist||album||mediaKind (5. Teil)
+  // Videos erscheinen nur wenn die Karte sie erlaubt UND der Haken gesetzt ist.
+  get _videosVisible() {
+    return !!this._config?.allow_music_videos && this._includeVideos;
+  }
+
   _filterVideos(items) {
-    if (this._includeVideos) return items;
+    if (this._videosVisible) return items;
     return items.filter(i => {
       const cid   = i.media_content_id || '';
       const parts = cid.split('||');
@@ -387,7 +679,11 @@ class AmSearchCard extends HTMLElement {
     if (!active) return;
     const a = state.attributes;
     const cover = s.querySelector('.np-cover');
-    if (a.entity_picture) { cover.src = a.entity_picture; cover.style.display = 'block'; }
+    // entity_picture_local = HA-proxy URL (relativ, immer erreichbar auch auf HTTPS)
+    const pic = a.entity_picture_local
+      ? (a.entity_picture_local.startsWith('/') ? location.origin + a.entity_picture_local : a.entity_picture_local)
+      : a.entity_picture || '';
+    if (pic) { cover.src = pic; cover.style.display = 'block'; }
     else { cover.style.display = 'none'; }
     s.querySelector('.np-title').textContent  = a.media_title  || '';
     s.querySelector('.np-artist').textContent = a.media_artist || '';
@@ -426,6 +722,8 @@ class AmSearchCard extends HTMLElement {
       vSldr.style.background =
         `linear-gradient(to right, #fc3c44 0%, #fc3c44 ${vol}%, rgba(255,255,255,.2) ${vol}%)`;
     }
+    const vVal = s.querySelector('.np-vol-value');
+    if (vVal) vVal.textContent = `${vol}%`;
     // Fortschritts-Timer starten/stoppen
     if (state.state === 'playing') {
       if (!this._progressTimer) {
@@ -542,7 +840,7 @@ class AmSearchCard extends HTMLElement {
     const extractId = (t) => (t.media_content_id || '').split('||')[1] || '';
     // Phase-2-Video-Filter: track||id||artist||album||mediaKind → parts[4]
     const isVideo = (t) => {
-      if (this._includeVideos) return false;
+      if (this._videosVisible) return false;
       return (t.media_content_id || '').split('||')[4] === 'music video';
     };
 
@@ -601,6 +899,7 @@ class AmSearchCard extends HTMLElement {
         if (seenIds.has(id)) return false;
         seenIds.add(id); return true;
       });
+      const activeBefore = this._getActivePlayers();
       this._hass.callService('media_player', 'play_media', {
         entity_id:          this._config.entity,
         media_content_type: 'search_results',
@@ -611,6 +910,11 @@ class AmSearchCard extends HTMLElement {
         entity_id: this._config.entity,
         repeat: 'off',
       });
+      // Bei gemischten Listen ist nicht bekannt, wann ein Video an der Reihe
+      // ist – always_off greift hier wie bisher.
+      this._lastPlayHadVideo = false;
+      this._enforceAlwaysOff();
+      this._enforceActivePlayers(activeBefore);
       this._playingContext = 'search_results';
       this._renderView();
       return;
@@ -629,11 +933,18 @@ class AmSearchCard extends HTMLElement {
   _play(item) {
     if (!this._hass || !item.can_play) return;
     this._playingContext = item.media_class || null;
+    // mediaKind steckt je nach Typ an unterschiedlicher Position der content_id
+    const p = (item.media_content_id || '').split('||');
+    const kind = p[0] === 'track' ? p[4] : p[0] === 'album' ? p[3] : p[2];
+    this._lastPlayHadVideo = (kind === 'music video');
+    const activeBefore = this._getActivePlayers();
     this._hass.callService('media_player', 'play_media', {
       entity_id:          this._config.entity,
       media_content_type: item.media_content_type,
       media_content_id:   item.media_content_id,
     });
+    this._enforceAlwaysOff();
+    this._enforceActivePlayers(activeBefore);
   }
 
   // ── Rendering ─────────────────────────────────────────────────────────────
@@ -835,6 +1146,11 @@ const CARD_HTML = `
             <ha-icon icon="mdi:volume-high" class="np-vol-icon"></ha-icon>
           </button>
           <input type="range" class="np-vol-slider" min="0" max="100" value="50" />
+          <div class="np-vol-steps">
+            <button class="np-vol-down" title="Leiser"><ha-icon icon="mdi:minus"></ha-icon></button>
+            <span class="np-vol-value">50%</span>
+            <button class="np-vol-up" title="Lauter"><ha-icon icon="mdi:plus"></ha-icon></button>
+          </div>
         </div>
       </div>
     </div>
@@ -854,6 +1170,10 @@ const CARD_HTML = `
       <ha-icon class="logo" icon="mdi:music-circle"></ha-icon>
       <span class="header-title"></span>
     </div>
+    <details class="am-player-panel hidden">
+      <summary class="am-player-btn">🔊 ---</summary>
+      <div class="am-player-list"></div>
+    </details>
     <button class="more-info-btn" title="Mehr Informationen">
       <ha-icon icon="mdi:information-outline"></ha-icon>
     </button>
@@ -868,9 +1188,10 @@ const CARD_HTML = `
         <ha-icon icon="mdi:close-circle"></ha-icon>
       </button>
     </div>
+    <div class="kbd hidden"></div>
     <div class="video-toggle">
       <label class="video-toggle-label">
-        <input type="checkbox" class="include-videos-cb" checked />
+        <input type="checkbox" class="include-videos-cb" />
         <span>Musikvideos inkludieren</span>
       </label>
     </div>
@@ -896,18 +1217,42 @@ const CSS_STYLES = `
   :host { display: block; height: 100%; }
   ha-card {
     display: flex; flex-direction: column;
-    height: 100%; overflow: hidden;
-  }
-
-  /* ── Black card background ── */
-  :host { display: block; height: 100%; }
-  ha-card {
-    display: flex; flex-direction: column;
-    height: 100%; overflow: hidden;
+    height: 100%; overflow: hidden; position: relative;
     background: #0d0d0d !important;
     color: #f0f0f0;
   }
 
+  .am-player-panel {
+    position: relative; margin-left: auto; margin-right: 8px; align-self: center; line-height: 1;
+  }
+  .am-player-panel.hidden { display: none; }
+  .am-player-btn {
+    cursor: pointer; list-style: none;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14);
+    color: rgba(240,240,240,.5); border-radius: 4px; font-size: 0.6em;
+    padding: 0px 4px; white-space: nowrap; user-select: none;
+    display: block; width: fit-content; max-width: 240px;
+    overflow: hidden; text-overflow: ellipsis; line-height: 1.4;
+  }
+  .am-player-btn::-webkit-details-marker { display: none; }
+  .am-player-btn.active { border-color: rgba(240,240,240,.5); color: rgba(240,240,240,.85); }
+  .am-player-list {
+    position: absolute; right: 0; top: calc(100% + 4px);
+    background: #222; border: 1px solid rgba(255,255,255,.2);
+    border-radius: 8px; padding: 4px; z-index: 200;
+    min-width: 200px; width: max-content; max-width: 280px;
+    max-height: 220px; overflow-y: auto;
+  }
+  .am-player-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; cursor: pointer; border-radius: 5px;
+    font-size: 0.75em; color: rgba(240,240,240,.8);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .am-player-item:hover { background: rgba(255,255,255,.08); }
+  .am-player-item input[type="checkbox"] {
+    accent-color: #fc3c44; cursor: pointer; width: 16px; height: 16px; flex-shrink: 0;
+  }
   .more-info-btn {
     background: none; border: none; cursor: pointer;
     color: rgba(240,240,240,.45); display: flex; align-items: center;
@@ -1000,6 +1345,18 @@ const CSS_STYLES = `
     transition: color 0.15s;
   }
   .np-vol-btn:hover { color: #ffffff; }
+  .np-vol-steps { display: flex; align-items: center; gap: 4px; }
+  .np-vol-steps button {
+    background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.18);
+    color: rgba(240,240,240,.8); border-radius: 8px; cursor: pointer;
+    width: 34px; height: 30px; display: flex; align-items: center; justify-content: center;
+    padding: 0; --mdc-icon-size: 18px;
+  }
+  .np-vol-steps button:hover { background: rgba(255,255,255,.16); color: #ffffff; }
+  .np-vol-steps button:active { transform: scale(.94); }
+  .np-vol-value {
+    min-width: 42px; text-align: center; font-size: 0.8em; color: rgba(240,240,240,.7);
+  }
   .np-vol-icon { --mdc-icon-size: 22px; }
   .np-vol-slider {
     -webkit-appearance: none; appearance: none;
@@ -1067,7 +1424,7 @@ const CSS_STYLES = `
   .hidden { display: none !important; }
 
   /* ── Suchbereich ── */
-  .search-area { padding: 0 12px 8px; }
+  .search-area { padding: 0 12px 8px; touch-action: pan-x pinch-zoom; }
   .search-row {
     display: flex; align-items: center;
     background: rgba(255,255,255,.08);
@@ -1130,8 +1487,30 @@ const CSS_STYLES = `
   .play-all-btn ha-icon { --mdc-icon-size: 22px; }
 
   /* ── Ergebnisliste ── */
+  /* Im normalen Fluss, damit die Karte bei rows: auto mitwaechst und die
+     Tastatur bei fester Hoehe die Liste zusammenschiebt statt sie zu verdecken */
+  .kbd {
+    flex: 0 0 auto; margin: 6px 0;
+    background: #1b1b1b; border: 1px solid rgba(255,255,255,.12); border-radius: 8px;
+    padding: 5px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .kbd.hidden { display: none; }
+  .kbd-row { display: flex; gap: 4px; justify-content: center; }
+  .kbd-key {
+    flex: 1 1 0; min-width: 0; height: 40px;
+    background: rgba(255,255,255,.10); border: none; border-radius: 6px;
+    color: #f0f0f0; font-size: 0.95em; cursor: pointer; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .kbd-key:active { background: rgba(255,255,255,.28); }
+  .kbd-key.wide  { flex: 3 1 0; }
+  .kbd-key.done  { flex: 2 1 0; background: #fc3c44; color: #4A1B0C; }
   .items-list {
     flex: 1; min-height: 80px; max-height: 440px; overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
     padding: 4px 8px 2px;
     scrollbar-width: thin;
     scrollbar-color: var(--divider-color, rgba(128,128,128,.3)) transparent;
@@ -1243,36 +1622,132 @@ class AmSearchCardEditor extends HTMLElement {
     this._config = {};
     this._hass   = null;
     this._form   = null;
+    this._playerSection = null;
   }
 
   set hass(hass) {
     this._hass = hass;
     if (this._form) this._form.hass = hass;
+    this._renderPlayers();
   }
 
   setConfig(config) {
-    this._config = { ...config };
+    this._config = { ...config, players: { ...(config.players || {}) } };
     if (!this._form) {
       const form        = document.createElement('ha-form');
       form.schema       = [
-        { name: 'entity', required: true, selector: { entity: { domain: 'media_player' } } },
-        { name: 'title',  selector: { text: {} } },
+        { name: 'title', selector: { text: {} } },
+        { name: 'allow_music_videos', selector: { boolean: {} } },
+        { name: 'onscreen_keyboard', selector: { boolean: {} } },
+        { name: 'volume_control', selector: { select: { mode: 'dropdown', options: [
+          { value: 'slider',  label: 'Schieberegler' },
+          { value: 'buttons', label: 'Plus / Minus (Tablet)' },
+        ] } } },
       ];
-      form.computeLabel = (s) =>
-        ({ entity: 'Media Player', title: 'Titel (optional)' })[s.name] ?? s.name;
+      form.computeLabel = (s) => ({
+        title: 'Titel (optional)',
+        allow_music_videos: 'Musikvideos erlauben',
+        onscreen_keyboard: 'Bildschirmtastatur (Tablet)',
+        volume_control: 'Lautstärkeregelung',
+      })[s.name] ?? s.name;
       form.addEventListener('value-changed', (ev) => {
-        this._config = ev.detail.value;
-        this.dispatchEvent(new CustomEvent('config-changed', {
-          detail:   { config: this._config },
-          bubbles:  true,
-          composed: true,
-        }));
+        this._config = {
+          ...this._config,
+          title: ev.detail.value.title,
+          allow_music_videos: !!ev.detail.value.allow_music_videos,
+          onscreen_keyboard: !!ev.detail.value.onscreen_keyboard,
+          volume_control: ev.detail.value.volume_control || 'slider',
+        };
+        this._dispatch();
       });
       if (this._hass) form.hass = this._hass;
       this._form = form;
       this.appendChild(form);
+
+      const sec = document.createElement('div');
+      sec.style.cssText = 'margin-top:16px;';
+      sec.innerHTML = '<div style="font-size:0.85em;font-weight:500;color:var(--secondary-text-color);margin-bottom:8px;padding:0 4px">AirPlay Empfänger</div>';
+      this._playerSection = document.createElement('div');
+      sec.appendChild(this._playerSection);
+      this.appendChild(sec);
     }
-    this._form.data = this._config;
+    this._form.data = {
+      title: this._config.title,
+      allow_music_videos: !!this._config.allow_music_videos,
+      onscreen_keyboard: !!this._config.onscreen_keyboard,
+      volume_control: this._config.volume_control || 'slider',
+    };
+    this._renderPlayers();
+  }
+
+  _getAMPlayers() {
+    if (!this._hass) return [];
+    const base = this._config.entity;
+    return Object.values(this._hass.entities || {})
+      .filter(e => e.platform === 'apple_music' && e.entity_id !== base && e.entity_id.startsWith('media_player.'))
+      .map(e => e.entity_id).sort();
+  }
+
+  _renderPlayers() {
+    if (!this._playerSection || !this._hass) return;
+    if (this._playerSection.querySelector('input[type="text"]:focus')) return;
+    const players   = this._getAMPlayers();
+    if (players.length === 0) { this._playerSection.innerHTML = ''; return; }
+    const playerCfg = this._config.players || {};
+    this._playerSection.innerHTML = players.map(e => {
+      const defaultName = this._hass.states[e]?.attributes?.friendly_name || e;
+      const cfg         = playerCfg[e] || {};
+      const stateColor  = (this._hass.states[e]?.state === 'unavailable') ? '#888' : '#4caf50';
+      return `<div style="padding:6px 4px;border-bottom:1px solid var(--divider-color)" data-entity="${e}">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${stateColor};flex-shrink:0"></span>
+          <span style="font-size:0.8em;flex:0 0 110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--primary-text-color)" title="${defaultName}">${defaultName}</span>
+          <input type="text" class="player-name" data-entity="${e}"
+                 placeholder="Benutzerdefinierter Name" value="${cfg.name || ''}"
+                 style="flex:1;font-size:0.78em;background:var(--card-background-color);
+                        border:1px solid var(--divider-color);border-radius:4px;
+                        padding:3px 6px;color:var(--primary-text-color)"/>
+        </div>
+        <div style="display:flex;gap:20px;padding-left:18px;margin-top:2px;border-left:2px solid var(--divider-color)">
+          <label style="display:flex;align-items:center;gap:5px;font-size:0.73em;color:var(--secondary-text-color);cursor:pointer">
+            <input type="checkbox" class="player-hidden" data-entity="${e}" ${cfg.hidden ? 'checked' : ''}
+                   style="cursor:pointer;width:14px;height:14px"/>
+            Nie anzeigen
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:0.73em;color:var(--secondary-text-color);cursor:pointer">
+            <input type="checkbox" class="player-always-off" data-entity="${e}" ${cfg.always_off ? 'checked' : ''}
+                   style="cursor:pointer;width:14px;height:14px"/>
+            Immer Aus
+          </label>
+        </div>
+      </div>`;
+    }).join('');
+
+    this._playerSection.querySelectorAll('.player-name').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const e = inp.dataset.entity;
+        this._config.players = { ...this._config.players, [e]: { ...(this._config.players[e]||{}), name: inp.value.trim() } };
+        this._dispatch();
+      });
+    });
+    this._playerSection.querySelectorAll('.player-hidden').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const e = cb.dataset.entity;
+        this._config.players = { ...this._config.players, [e]: { ...(this._config.players[e]||{}), hidden: cb.checked } };
+        this._dispatch();
+      });
+    });
+    this._playerSection.querySelectorAll('.player-always-off').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const e = cb.dataset.entity;
+        this._config.players = { ...this._config.players, [e]: { ...(this._config.players[e]||{}), always_off: cb.checked } };
+        this._dispatch();
+      });
+    });
+  }
+
+  _dispatch() {
+    this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this._config }, bubbles: true, composed: true }));
   }
 }
 
@@ -1280,7 +1755,7 @@ customElements.define('am-search-card-editor', AmSearchCardEditor);
 
 // ── Registrierung ─────────────────────────────────────────────────────────────
 
-customElements.define('am-search-card', AmSearchCard);
+if (!customElements.get('am-search-card')) customElements.define('am-search-card', AmSearchCard);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
