@@ -305,6 +305,15 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
             await self.coordinator.async_request_refresh()
             return
 
+        elif parts[0] == "genre" and len(parts) >= 2:
+            genre = parts[1]
+            _LOGGER.debug("Playing genre: %s", genre)
+            await self.coordinator.async_send_command(
+                "PUT", f"/library/genres/{urlquote(genre, safe='')}/play"
+            )
+            await self.coordinator.async_request_refresh()
+            return
+
         elif parts[0] == "playlist" and len(parts) >= 2:
             await self.coordinator.async_send_command(
                 "PUT", f"/playlists/{parts[1]}/play"
@@ -507,6 +516,21 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
                     can_play=True,
                     can_expand=True,
                     thumbnail=thumbnail,
+                )
+            )
+
+        for g in data.get("genres", []) or []:
+            g_name = g.get("name", "")
+            g_mk   = g.get("mediaKind", "song")
+            cid    = f"genre{S}{g_name}{S}{g_mk}"
+            results.append(
+                BrowseMedia(
+                    title=g_name,
+                    media_class=MediaClass.GENRE,
+                    media_content_type=MediaType.GENRE,
+                    media_content_id=cid,
+                    can_play=True,
+                    can_expand=True,
                 )
             )
 

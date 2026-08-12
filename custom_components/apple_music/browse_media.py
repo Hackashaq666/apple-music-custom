@@ -5,7 +5,7 @@ from urllib.parse import quote
 from homeassistant.components.media_player import BrowseMedia, MediaClass, MediaType
 from homeassistant.components.media_player.errors import BrowseError
 from .const import (
-    BROWSE_ALBUMS, BROWSE_ARTISTS, BROWSE_PLAYLISTS,
+    BROWSE_ALBUMS, BROWSE_ARTISTS, BROWSE_GENRES, BROWSE_PLAYLISTS,
     BROWSE_ROOT, BROWSE_SEP, BROWSE_TRACKS,
 )
 
@@ -60,6 +60,7 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
             _node("Artists",   MediaClass.ARTIST,   MediaType.ARTIST,   BROWSE_ARTISTS,   False, True),
             _node("Albums",    MediaClass.ALBUM,     MediaType.ALBUM,    BROWSE_ALBUMS,    False, True),
             _node("Tracks",    MediaClass.TRACK,     MediaType.TRACK,    BROWSE_TRACKS,    False, True),
+            _node("Genres",    MediaClass.GENRE,     MediaType.GENRE,    BROWSE_GENRES,    False, True),
         ])
 
     # ── Playlists ─────────────────────────────────────────────────────────────
@@ -74,6 +75,15 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
                 for pl in data.get("playlists", [])]
         return _node("Playlists", MediaClass.DIRECTORY, MediaType.PLAYLIST,
                      BROWSE_PLAYLISTS, False, True, kids)
+
+    # ── Genres ────────────────────────────────────────────────────────────────
+    if media_content_id == BROWSE_GENRES:
+        data = await C.async_get("/library/genres") or {}
+        kids = [_node(f"{g['name']} ({g['count']})", MediaClass.GENRE, MediaType.GENRE,
+                      f"genre{S}{g['name']}{S}{g.get('mediaKind','song')}", True, True)
+                for g in data.get("genres", [])]
+        return _node("Genres", MediaClass.DIRECTORY, MediaType.GENRE,
+                     BROWSE_GENRES, False, True, kids)
 
     # ── Artists — Buchstaben-Übersicht ────────────────────────────────────────
     if media_content_id == BROWSE_ARTISTS:
@@ -185,6 +195,18 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
                      f"album{S}{parts[1]}{S}{parts[2]}", False, True, kids)  # parts[3]=mediaKind ignoriert beim Drill-down
 
     # ── Playlist → ihre Tracks ───────────────────────────────────────────────
+    if parts[0] == "genre" and len(parts) >= 2:
+        g_name = parts[1]
+        data   = await C.async_get(f"/library/genres/{q(g_name)}/tracks") or {}
+        kids   = [_node(
+                    f"{t['name']} — {t.get('albumArtist') or t.get('artist') or ''}".rstrip(" — "),
+                    MediaClass.TRACK, MediaType.TRACK,
+                    _track_cid(t, S), True, False,
+                    thumbnail=_track_thumb(t, hu, bu, entity, S))
+                  for t in data.get("tracks", [])]
+        return _node(data.get("genre", g_name), MediaClass.GENRE, MediaType.GENRE,
+                     f"genre{S}{g_name}", False, True, kids)
+
     if parts[0] == "playlist" and len(parts) >= 2:
         pl_id = parts[1]
         data  = await C.async_get(f"/playlists/{q(pl_id)}/tracks") or {}

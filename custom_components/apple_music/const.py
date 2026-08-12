@@ -12,5 +12,6 @@ BROWSE_PLAYLISTS  = "playlists"
 BROWSE_ARTISTS    = "artists"
 BROWSE_ALBUMS     = "albums"
 BROWSE_TRACKS     = "tracks"
+BROWSE_GENRES     = "genres"
 # Separator used in browse media_content_id paths
 BROWSE_SEP = "||"
