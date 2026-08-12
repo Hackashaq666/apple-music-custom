@@ -157,13 +157,14 @@ var FETCH_TRACKS_SCRIPT = [
   '  var allDiscNums = lib.tracks.discNumber();',
   '  var allDurations = lib.tracks.duration();',
   '  var allMediaKinds = lib.tracks.mediaKind();',
+  '  var allGenres = lib.tracks.genre();',
   '  var allCompilations = lib.tracks.compilation();',
   '  for (var i = 0; i < allIDs.length; i++) {',
   '    var kind = allKinds[i] || "";',
   '    if (kind !== "song" && kind !== "music video" && kind !== "" && kind !== undefined) { continue; }',
   '    var id = allIDs[i] || "";',
   '    if (!id) { continue; }',
-  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true, mediaKind: allMediaKinds[i] || "song" });',
+  '    tracks.push({ id: id, name: allNames[i] || "", artist: allArtists[i] || "", albumArtist: allAlbumArtists[i] || "", album: allAlbums[i] || "", track_number: allTrackNums[i] || 0, disc_number: allDiscNums[i] || 1, duration: allDurations[i] || 0, compilation: allCompilations[i] === true, mediaKind: allMediaKinds[i] || "song", genre: allGenres[i] || "" });',
   '  }',
   '} catch(bulkErr) {',
   '  try {',
@@ -175,7 +176,7 @@ var FETCH_TRACKS_SCRIPT = [
   '        if (kind !== "song" && kind !== "music video" && kind !== "" && kind !== undefined) { continue; }',
   '        var id = ""; try { id = t.persistentID(); } catch(e) {}',
   '        if (!id) { continue; }',
-  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })(), mediaKind: (function(){ try { return t.mediaKind() || "song"; } catch(e) { return "song"; } })() });',
+  '        tracks.push({ id: id, name: (function(){ try { return t.name() || ""; } catch(e) { return ""; } })(), artist: (function(){ try { return t.artist() || ""; } catch(e) { return ""; } })(), albumArtist: (function(){ try { return t.albumArtist() || ""; } catch(e) { return ""; } })(), album: (function(){ try { return t.album() || ""; } catch(e) { return ""; } })(), track_number: (function(){ try { return t.trackNumber(); } catch(e) { return 0; } })(), disc_number: (function(){ try { return t.discNumber(); } catch(e) { return 1; } })(), duration: (function(){ try { return t.duration(); } catch(e) { return 0; } })(), compilation: (function(){ try { return t.compilation() === true; } catch(e) { return false; } })(), mediaKind: (function(){ try { return t.mediaKind() || "song"; } catch(e) { return "song"; } })(), genre: (function(){ try { return t.genre() || ""; } catch(e) { return ""; } })() });',
   '      } catch(e) {}',
   '    }',
   '  } catch(e) {}',
@@ -457,6 +458,26 @@ function buildArtists(tracks, offset, limit) {
   }
   artists.sort(function(a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
   return { total: artists.length, offset: offset, limit: limit, artists: artists.slice(offset, offset + limit) };
+}
+
+function buildGenres(tracks) {
+  var counts = {};
+  var kinds  = {};
+  for (var i = 0; i < tracks.length; i++) {
+    var g = (tracks[i].genre || '').trim();
+    if (!g) { continue; }
+    counts[g] = (counts[g] || 0) + 1;
+    if (!kinds[g]) kinds[g] = [];
+    kinds[g].push(tracks[i].mediaKind || 'song');
+  }
+  var genres = Object.keys(counts).map(function(g) {
+    var all = kinds[g] || [];
+    var allVideos = all.length > 0 && all.every(function(k) { return k === 'music video'; });
+    return { id: slugify(g), name: g, count: counts[g],
+             mediaKind: allVideos ? 'music video' : 'song' };
+  });
+  genres.sort(function(a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
+  return { total: genres.length, genres: genres };
 }
 
 function buildAlbumsByArtist(tracks, artistName) {
@@ -1200,6 +1221,34 @@ app.get('/library/artists', function(req, res) {
   });
 });
 
+app.get('/library/genres', function(req, res) {
+  getLibraryTracks(function(error, tracks) {
+    if (error) { console.log(error); return res.sendStatus(500); }
+    res.json(buildGenres(tracks));
+  });
+});
+
+// Tracks eines Genres, sortiert nach Album/Disc/Track wie die uebrigen Listen
+app.get('/library/genres/:genre/tracks', function(req, res) {
+  getLibraryTracks(function(error, tracks) {
+    if (error) { console.log(error); return res.sendStatus(500); }
+    var want = String(req.params.genre || '').toLowerCase();
+    var hits = tracks.filter(function(t) {
+      return (t.genre || '').toLowerCase() === want;
+    });
+    hits.sort(function(a, b) {
+      var byAlbum = String(a.album || '').toLowerCase()
+        .localeCompare(String(b.album || '').toLowerCase());
+      if (byAlbum !== 0) { return byAlbum; }
+      if ((a.disc_number || 1) !== (b.disc_number || 1)) {
+        return (a.disc_number || 1) - (b.disc_number || 1);
+      }
+      return (a.track_number || 0) - (b.track_number || 0);
+    });
+    res.json({ genre: req.params.genre, tracks: hits });
+  });
+});
+
 app.get('/library/artists/:artist/albums', function(req, res) {
   getLibraryTracks(function(error, tracks) {
     if (error) { console.log(error); return res.sendStatus(500); }
@@ -1319,6 +1368,28 @@ app.put('/library/albums/:artist/:album/play', function(req, res) {
     if (ids.length === 0) { return res.sendStatus(404); }
     playByIDsTempScript('HA_Play_Album', ids, function(error) {
       if (error) { console.log('play-album error:', error); return res.sendStatus(500); }
+      sendResponse(null, res);
+    });
+  });
+});
+
+app.put('/library/genres/:genre/play', function(req, res) {
+  var want = String(req.params.genre || '').toLowerCase();
+  getLibraryTracks(function(error, tracks) {
+    if (error) { return res.sendStatus(500); }
+    var ids = tracks
+      .filter(function(t) { return (t.genre || '').toLowerCase() === want; })
+      .sort(function(a, b) {
+        if (a.album < b.album) { return -1; }
+        if (a.album > b.album) { return 1; }
+        var ka = (a.disc_number || 1) * 10000 + (a.track_number || 0);
+        var kb = (b.disc_number || 1) * 10000 + (b.track_number || 0);
+        return ka - kb;
+      })
+      .map(function(t) { return t.id; });
+    if (ids.length === 0) { return res.sendStatus(404); }
+    playByIDsTempScript('HA_Play_Genre', ids, function(error) {
+      if (error) { console.log('play-genre error:', error); return res.sendStatus(500); }
       sendResponse(null, res);
     });
   });
@@ -1450,6 +1521,7 @@ app.get('/library/search', function(req, res) {
   var wantArtists   = mediaType === 'all' || mediaType === 'artist';
   var wantAlbums    = mediaType === 'all' || mediaType === 'album';
   var wantPlaylists = mediaType === 'all' || mediaType === 'playlist';
+  var wantGenres    = mediaType === 'all' || mediaType === 'genre';
 
   getLibraryTracks(function(error, tracks) {
     if (error) { console.log(error); return res.sendStatus(500); }
@@ -1516,6 +1588,13 @@ app.get('/library/search', function(req, res) {
         .slice(0, limit);
     }
 
+    var genreResults = [];
+    if (wantGenres) {
+      genreResults = buildGenres(tracks).genres
+        .filter(function(g) { return g.name.toLowerCase().indexOf(query) !== -1; })
+        .slice(0, limit);
+    }
+
     function sendResults(playlists) {
       var playlistResults = wantPlaylists
         ? playlists.filter(function(pl) { return pl.name.toLowerCase().indexOf(query) !== -1; }).slice(0, limit)
@@ -1525,7 +1604,8 @@ app.get('/library/search', function(req, res) {
         tracks: trackResults,
         artists: artistResults,
         albums: albumResults,
-        playlists: playlistResults
+        playlists: playlistResults,
+        genres: genreResults
       });
     }
 
