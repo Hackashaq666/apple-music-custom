@@ -17,6 +17,7 @@ const FILTERS = [
   { id: 'track',    label: 'Track',     classes: ['track'] },
   { id: 'album',    label: 'Album',     classes: ['album'] },
   { id: 'artist',   label: 'Künstler',  classes: ['artist'] },
+  { id: 'genre',    label: 'Genre',     classes: ['genre'] },
   { id: 'playlist', label: 'Playlist',  classes: ['playlist'] },
 ];
 
@@ -25,10 +26,12 @@ const MEDIA_ICONS = {
   album:    'mdi:album',
   artist:   'mdi:account-music',
   playlist: 'mdi:playlist-music',
+  genre:    'mdi:tag-multiple',
 };
 
 const MEDIA_LABELS = {
   track: 'Track', album: 'Album', artist: 'Künstler', playlist: 'Playlist',
+  genre: 'Genre',
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -189,9 +192,7 @@ class AmSearchCard extends HTMLElement {
       clearTimeout(this._debounce);
       // Gleiche Logik wie beim Leeren per Tastatur: bei aktivem Playlist-Filter
       // die vollstaendige Playlist-Liste zeigen statt eine leere Ansicht.
-      if (this._filter === 'playlist') {
-        this._loadAllPlaylists();
-      } else {
+      if (!this._loadAllForFilter()) {
         this._navStack = [];
         this._renderView();
       }
@@ -203,9 +204,7 @@ class AmSearchCard extends HTMLElement {
       clearTimeout(this._debounce);
       const q = input.value.trim();
       if (!q) {
-        if (this._filter === 'playlist') {
-          this._loadAllPlaylists();
-        } else {
+        if (!this._loadAllForFilter()) {
           this._navStack = [];
           this._renderView();
         }
@@ -241,9 +240,7 @@ class AmSearchCard extends HTMLElement {
         const q = input.value.trim();
         if (q) {
           this._doSearch(q);
-        } else if (this._filter === 'playlist') {
-          this._loadAllPlaylists();
-        } else {
+        } else if (!this._loadAllForFilter()) {
           this._navStack = [];
           this._renderView();
         }
@@ -458,6 +455,9 @@ class AmSearchCard extends HTMLElement {
       list.innerHTML = available.map(e => `<label class="am-player-item" title="${displayName(e)}">
         <input type="checkbox" data-entity="${e}"/>
         <span style="overflow:hidden;text-overflow:ellipsis">${displayName(e)}</span>
+        <button class="am-reconnect" data-entity="${e}" title="Neu verbinden">
+          <ha-icon icon="mdi:refresh"></ha-icon>
+        </button>
       </label>`).join('');
 
       list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
@@ -465,6 +465,23 @@ class AmSearchCard extends HTMLElement {
           ev.stopPropagation();
           this._hass.callService('media_player', cb.checked ? 'turn_on' : 'turn_off',
             { entity_id: cb.dataset.entity });
+        });
+      });
+
+      // Neu verbinden: aus, kurz warten, wieder ein. Der Knopf liegt in einem
+      // <label>, daher muss dessen Standardaktion unterbunden werden – sonst
+      // wuerde zusaetzlich das Kontrollkaestchen umschalten.
+      list.querySelectorAll('.am-reconnect').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const entity = btn.dataset.entity;
+          btn.classList.add('busy');
+          this._hass?.callService('media_player', 'turn_off', { entity_id: entity });
+          setTimeout(() => {
+            this._hass?.callService('media_player', 'turn_on', { entity_id: entity });
+            btn.classList.remove('busy');
+          }, 2000);
         });
       });
     }
@@ -618,6 +635,7 @@ class AmSearchCard extends HTMLElement {
       if (parts[0] === 'album')    return parts[3] !== 'music video'; // album||artist||name||mediaKind
       if (parts[0] === 'playlist') return parts[2] !== 'music video'; // playlist||id||mediaKind
       if (parts[0] === 'artist')   return parts[2] !== 'music video'; // artist||name||mediaKind
+      if (parts[0] === 'genre')    return parts[2] !== 'music video'; // genre||name||mediaKind
       return true;
     });
   }
@@ -744,6 +762,35 @@ class AmSearchCard extends HTMLElement {
 
   // ── Alle Playlists laden (wenn Filter=Playlist ohne Sucheingabe) ─────────────
 
+  // Zeigt bei leerem Suchfeld die vollstaendige Liste – fuer Playlists und Genres
+  _loadAllForFilter() {
+    if (this._filter === 'playlist') { this._loadAllPlaylists(); return true; }
+    if (this._filter === 'genre')    { this._loadAllGenres();    return true; }
+    return false;
+  }
+
+  async _loadAllGenres() {
+    this._loading = true;
+    this._error   = '';
+    this._renderLoading();
+    try {
+      const res = await this._hass.connection.sendMessagePromise({
+        type:               'media_player/browse_media',
+        entity_id:          this._config.entity,
+        media_content_type: 'genre',
+        media_content_id:   'genres',
+      });
+      const items = res?.children ?? [];
+      this._navStack = [{ title: 'Genres', items }];
+      this._renderView();
+    } catch (e) {
+      this._error = 'Genres konnten nicht geladen werden: ' + (e?.message ?? e);
+      this._renderError();
+    } finally {
+      this._loading = false;
+    }
+  }
+
   async _loadAllPlaylists() {
     this._loading = true;
     this._error   = '';
@@ -867,7 +914,8 @@ class AmSearchCard extends HTMLElement {
     // Phase 2: Artists/Alben sequenziell expandieren → Album-Reihenfolge erhalten
     const expandable = filteredItems.filter(i =>
       String(i.media_content_id).startsWith('artist||') ||
-      String(i.media_content_id).startsWith('album||')
+      String(i.media_content_id).startsWith('album||') ||
+      String(i.media_content_id).startsWith('genre||')
     );
 
     if (expandable.length > 0) {
@@ -876,6 +924,7 @@ class AmSearchCard extends HTMLElement {
         try {
           const res = await browse(item);
           const children = res?.children ?? [];
+          // Genre und Album liefern direkt Tracks, nur Artist braucht zwei Ebenen
           if (String(item.media_content_id).startsWith('artist||')) {
             // Artist → sequenziell Album für Album expandieren
             for (const album of children) {
@@ -1250,6 +1299,15 @@ const CSS_STYLES = `
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .am-player-item:hover { background: rgba(255,255,255,.08); }
+  .am-reconnect {
+    margin-left: auto; flex-shrink: 0;
+    background: none; border: none; padding: 0 2px; cursor: pointer;
+    color: rgba(240,240,240,.4); --mdc-icon-size: 16px;
+    display: flex; align-items: center;
+  }
+  .am-reconnect:hover { color: #ffffff; }
+  .am-reconnect.busy { color: #fc3c44; animation: am-spin 1s linear infinite; }
+  @keyframes am-spin { to { transform: rotate(360deg); } }
   .am-player-item input[type="checkbox"] {
     accent-color: #fc3c44; cursor: pointer; width: 16px; height: 16px; flex-shrink: 0;
   }
