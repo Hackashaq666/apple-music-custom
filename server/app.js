@@ -331,8 +331,7 @@ var artistsCache = null;
 // Custom addition: short-lived playlist cache used only by the extended /library/search
 // endpoint below, so typing in YAMP's search box doesn't trigger an AppleScript exec per
 // keystroke. The existing /playlists route is left untouched and still fetches live.
-var playlistsCache = { data: null, fetchedAt: 0, ttl: 5 * 60 * 1000 };
-
+var playlistsCache = { data: null, fetchedAt: 0, ttl: 60 * 60 * 1000 };
 function getPlaylistsCached(callback) {
   var now = Date.now();
   if (playlistsCache.data && (now - playlistsCache.fetchedAt) < playlistsCache.ttl) {
