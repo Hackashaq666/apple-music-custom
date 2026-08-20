@@ -5,8 +5,8 @@ from urllib.parse import quote
 from homeassistant.components.media_player import BrowseMedia, MediaClass, MediaType
 from homeassistant.components.media_player.errors import BrowseError
 from .const import (
-    BROWSE_ALBUMS, BROWSE_ARTISTS, BROWSE_GENRES, BROWSE_PLAYLISTS,
-    BROWSE_ROOT, BROWSE_SEP, BROWSE_TRACKS,
+    BROWSE_ALBUMS, BROWSE_ARTISTS, BROWSE_GENRES, BROWSE_NOW_PLAYING,
+    BROWSE_PLAYLISTS, BROWSE_ROOT, BROWSE_SEP, BROWSE_TRACKS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +75,19 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
                 for pl in data.get("playlists", [])]
         return _node("Playlists", MediaClass.DIRECTORY, MediaType.PLAYLIST,
                      BROWSE_PLAYLISTS, False, True, kids)
+
+    # ── Aktuell laufende Wiedergabeliste ──────────────────────────────────────
+    if media_content_id == BROWSE_NOW_PLAYING:
+        data = await C.async_get("/now_playing/tracks") or {}
+        kids = [_node(
+                    f"{t['name']} — {t.get('albumArtist') or t.get('artist') or ''}".rstrip(" — "),
+                    MediaClass.TRACK, MediaType.TRACK,
+                    _track_cid(t, S), True, False,
+                    thumbnail=_track_thumb(t, hu, bu, entity, S))
+                for t in data.get("tracks", [])]
+        return _node(data.get("playlist", "") or "Läuft gerade",
+                     MediaClass.PLAYLIST, MediaType.PLAYLIST,
+                     BROWSE_NOW_PLAYING, False, True, kids)
 
     # ── Genres ────────────────────────────────────────────────────────────────
     if media_content_id == BROWSE_GENRES:
