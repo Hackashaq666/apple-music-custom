@@ -111,8 +111,13 @@ class AmSearchCard extends HTMLElement {
         ns?.attributes?.is_volume_muted !== os?.attributes?.is_volume_muted ||
         ns?.attributes?.media_duration !== os?.attributes?.media_duration ||
         ns?.attributes?.shuffle !== os?.attributes?.shuffle ||
+        ns?.attributes?.media_playlist !== os?.attributes?.media_playlist ||
         ns?.attributes?.repeat !== os?.attributes?.repeat) {
       this._renderNowPlaying();
+    }
+
+    if (ns?.attributes?.media_content_id !== os?.attributes?.media_content_id) {
+      this._updateNowMarker();
     }
   }
 
@@ -222,6 +227,13 @@ class AmSearchCard extends HTMLElement {
     // Bildschirmtastatur oeffnen, sobald das Suchfeld angetippt wird
     input.addEventListener('focus', () => {
       if (this._config.onscreen_keyboard) this._showKeyboard(true);
+    });
+
+    // Kontext-Label: laufende Wiedergabeliste anzeigen
+    s.querySelector('.np-context').addEventListener('click', () => {
+      const pl  = this._hass?.states?.[this._config.entity]?.attributes?.media_playlist;
+      const key = this._contextFromPlaylist(pl) || this._playingContext;
+      if (key && key !== 'track') { this._loadNowPlayingList(); }
     });
 
     // Video-Toggle Checkbox
@@ -455,33 +467,17 @@ class AmSearchCard extends HTMLElement {
       list.innerHTML = available.map(e => `<label class="am-player-item" title="${displayName(e)}">
         <input type="checkbox" data-entity="${e}"/>
         <span style="overflow:hidden;text-overflow:ellipsis">${displayName(e)}</span>
-        <button class="am-reconnect" data-entity="${e}" title="Neu verbinden">
-          <ha-icon icon="mdi:refresh"></ha-icon>
-        </button>
       </label>`).join('');
 
       list.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         cb.addEventListener('change', (ev) => {
           ev.stopPropagation();
+          const entity = cb.dataset.entity;
           this._hass.callService('media_player', cb.checked ? 'turn_on' : 'turn_off',
-            { entity_id: cb.dataset.entity });
-        });
-      });
-
-      // Neu verbinden: aus, kurz warten, wieder ein. Der Knopf liegt in einem
-      // <label>, daher muss dessen Standardaktion unterbunden werden – sonst
-      // wuerde zusaetzlich das Kontrollkaestchen umschalten.
-      list.querySelectorAll('.am-reconnect').forEach(btn => {
-        btn.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const entity = btn.dataset.entity;
-          btn.classList.add('busy');
-          this._hass?.callService('media_player', 'turn_off', { entity_id: entity });
-          setTimeout(() => {
-            this._hass?.callService('media_player', 'turn_on', { entity_id: entity });
-            btn.classList.remove('busy');
-          }, 2000);
+            { entity_id: entity });
+          // Zusaetzlich hinterlegtes Skript ausloesen (z. B. Verstaerker einschalten)
+          const cfg = (this._config.players || {})[entity] || {};
+          this._runPlayerScript(cb.checked ? cfg.script_on : cfg.script_off);
         });
       });
     }
@@ -706,11 +702,22 @@ class AmSearchCard extends HTMLElement {
     s.querySelector('.np-title').textContent  = a.media_title  || '';
     s.querySelector('.np-artist').textContent = a.media_artist || '';
     const ctxEl  = s.querySelector('.np-context');
-    const ctxMap = { track: 'Track', album: 'Album', artist: 'Künstler', playlist: 'Playlist', search_results: 'Suche' };
-    const ctxTxt = ctxMap[this._playingContext] || '';
+    const ctxMap = { track: 'Track', album: 'Album', artist: 'Künstler',
+                     genre: 'Genre', playlist: 'Playlist', search_results: 'Suche' };
+    // Kontext aus dem Namen der laufenden Wiedergabeliste ableiten. Damit stimmt
+    // das Label auf jedem Geraet – auch dort, wo die Wiedergabe nicht gestartet
+    // wurde. _playingContext dient nur noch als Rueckfall.
+    const ctxKey = this._contextFromPlaylist(a.media_playlist) || this._playingContext;
+    const ctxTxt = ctxMap[ctxKey] || '';
     if (ctxEl) {
-      ctxEl.textContent = ctxTxt;
+      ctxEl.querySelector('.np-context-text').textContent = ctxTxt;
       ctxEl.classList.toggle('hidden', !ctxTxt);
+      // Bei einem einzelnen Track waere die Liste nur einen Titel lang –
+      // dann bleibt das Label reine Beschriftung.
+      const tappable = !!ctxTxt && ctxKey !== 'track';
+      ctxEl.classList.toggle('tappable', tappable);
+      ctxEl.querySelector('ha-icon').style.display = tappable ? '' : 'none';
+      ctxEl.disabled = !tappable;
     }
     s.querySelector('.np-playpause ha-icon').setAttribute(
       'icon', state.state === 'playing' ? 'mdi:pause' : 'mdi:play'
@@ -767,6 +774,65 @@ class AmSearchCard extends HTMLElement {
     if (this._filter === 'playlist') { this._loadAllPlaylists(); return true; }
     if (this._filter === 'genre')    { this._loadAllGenres();    return true; }
     return false;
+  }
+
+  // Startet ein in der Konfiguration hinterlegtes Skript.
+  _runPlayerScript(entityId) {
+    if (!entityId || !this._hass) return;
+    this._hass.callService('script', 'turn_on', { entity_id: entityId });
+  }
+
+  // Ordnet den Namen der laufenden Wiedergabeliste einem Kontext zu.
+  // Die HA_Play_*-Hilfslisten legt der Server je nach Startart an;
+  // jeder andere Name ist eine echte Playlist aus Music.app.
+  _contextFromPlaylist(name) {
+    if (!name) return null;
+    if (name.startsWith('HA_Play_Search')) return 'search_results';
+    if (name === 'HA_Play_Album')  return 'album';
+    if (name === 'HA_Play_Artist') return 'artist';
+    if (name === 'HA_Play_Genre')  return 'genre';
+    if (name === 'HA_Play_Track')  return 'track';
+    return 'playlist';
+  }
+
+  // Markierung des laufenden Titels nachziehen, ohne die Liste neu zu bauen –
+  // ein Neuaufbau wuerde die Scrollposition verwerfen.
+  _updateNowMarker() {
+    const list = this.shadowRoot?.querySelector('.items-list');
+    if (!list) return;
+    const playingId = this._hass?.states?.[this._config.entity]?.attributes?.media_content_id || '';
+    list.querySelectorAll('.item').forEach(el => {
+      const id = el.dataset.track || '';
+      el.classList.toggle('item-now', !!id && id === playingId);
+    });
+  }
+
+  // Titel der gerade laufenden Wiedergabeliste als Trefferliste zeigen.
+  // Wird bei jedem Aufruf frisch geholt – zeigt damit den echten Stand,
+  // nicht einen gemerkten Suchvorgang.
+  async _loadNowPlayingList() {
+    this._loading = true;
+    this._error   = '';
+    this._renderLoading();
+    try {
+      const res = await this._hass.connection.sendMessagePromise({
+        type:               'media_player/browse_media',
+        entity_id:          this._config.entity,
+        media_content_type: 'playlist',
+        media_content_id:   'now_playing',
+      });
+      const items = res?.children ?? [];
+      const title = items.length
+        ? `Läuft gerade · ${items.length} Titel`
+        : 'Läuft gerade';
+      this._navStack = [{ title, items }];
+      this._renderView();
+    } catch (e) {
+      this._error = 'Wiedergabeliste konnte nicht geladen werden: ' + (e?.message ?? e);
+      this._renderError();
+    } finally {
+      this._loading = false;
+    }
   }
 
   async _loadAllGenres() {
@@ -1041,8 +1107,13 @@ class AmSearchCard extends HTMLElement {
       return;
     }
 
+    // persistentID des laufenden Titels – markiert die Zeile in der laufenden Liste
+    const playingId = this._hass?.states?.[this._config.entity]?.attributes?.media_content_id || '';
+
     list.innerHTML = items.map((item, idx) => {
       const icon     = MEDIA_ICONS[item.media_class] || 'mdi:music';
+      const cidParts = String(item.media_content_id || '').split('||');
+      const isNow    = !!playingId && cidParts[0] === 'track' && cidParts[1] === playingId;
       const subLabel = item.title.includes(' — ')
         ? item.title.split(' — ').slice(1).join(' — ')
         : (MEDIA_LABELS[item.media_class] || item.media_class);
@@ -1051,7 +1122,7 @@ class AmSearchCard extends HTMLElement {
         : item.title;
 
       return `
-        <div class="item" data-idx="${idx}">
+        <div class="item${isNow ? ' item-now' : ''}" data-idx="${idx}" data-track="${cidParts[0] === 'track' ? this._esc(cidParts[1] || '') : ''}">
           <div class="thumb-wrap">
             ${item.thumbnail
               ? `<img class="thumb" src="${this._esc(item.thumbnail)}" alt="" />
@@ -1167,7 +1238,9 @@ const CARD_HTML = `
         <div class="np-info">
           <span class="np-title"></span>
           <span class="np-artist"></span>
-          <span class="np-context hidden"></span>
+          <button class="np-context hidden" title="Laufende Wiedergabeliste anzeigen">
+            <ha-icon icon="mdi:playlist-music"></ha-icon><span class="np-context-text"></span>
+          </button>
         </div>
         <div class="np-playback">
           <div class="np-transport">
@@ -1299,15 +1372,6 @@ const CSS_STYLES = `
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .am-player-item:hover { background: rgba(255,255,255,.08); }
-  .am-reconnect {
-    margin-left: auto; flex-shrink: 0;
-    background: none; border: none; padding: 0 2px; cursor: pointer;
-    color: rgba(240,240,240,.4); --mdc-icon-size: 16px;
-    display: flex; align-items: center;
-  }
-  .am-reconnect:hover { color: #ffffff; }
-  .am-reconnect.busy { color: #fc3c44; animation: am-spin 1s linear infinite; }
-  @keyframes am-spin { to { transform: rotate(360deg); } }
   .am-player-item input[type="checkbox"] {
     accent-color: #fc3c44; cursor: pointer; width: 16px; height: 16px; flex-shrink: 0;
   }
@@ -1391,11 +1455,21 @@ const CSS_STYLES = `
     width: 100%;
   }
   .np-context {
+    display: inline-flex; align-items: center; gap: 4px;
     font-size: 0.62em;
     color: rgba(240,240,240,.38);
     letter-spacing: 0.04em;
     font-weight: 500;
+    background: none; border: none; padding: 0;
+    font-family: inherit; text-align: left;
   }
+  .np-context ha-icon { --mdc-icon-size: 13px; }
+  .item-now .item-title { color: #fc3c44; }
+  .np-context.tappable {
+    border: 1px solid rgba(255,255,255,.18); border-radius: 999px;
+    padding: 1px 8px; cursor: pointer; color: rgba(240,240,240,.6);
+  }
+  .np-context.tappable:hover { color: #ffffff; border-color: rgba(255,255,255,.4); }
   .np-vol-btn {
     background: none; border: none; cursor: pointer;
     color: rgba(240,240,240,.55); display: flex; align-items: center;
@@ -1681,6 +1755,7 @@ class AmSearchCardEditor extends HTMLElement {
     this._hass   = null;
     this._form   = null;
     this._playerSection = null;
+    this._sectionFocused = false;
   }
 
   set hass(hass) {
@@ -1726,6 +1801,8 @@ class AmSearchCardEditor extends HTMLElement {
       sec.style.cssText = 'margin-top:16px;';
       sec.innerHTML = '<div style="font-size:0.85em;font-weight:500;color:var(--secondary-text-color);margin-bottom:8px;padding:0 4px">AirPlay Empfänger</div>';
       this._playerSection = document.createElement('div');
+      this._playerSection.addEventListener('focusin',  () => { this._sectionFocused = true;  });
+      this._playerSection.addEventListener('focusout', () => { this._sectionFocused = false; });
       sec.appendChild(this._playerSection);
       this.appendChild(sec);
     }
@@ -1748,7 +1825,10 @@ class AmSearchCardEditor extends HTMLElement {
 
   _renderPlayers() {
     if (!this._playerSection || !this._hass) return;
-    if (this._playerSection.querySelector('input[type="text"]:focus')) return;
+    // Kein Neuaufbau solange in der Sektion etwas bearbeitet wird. Bei den
+    // Auswahlfeldern liegt der Fokus im eigenen Schattenbaum – eine Suche nach
+    // ':focus' wuerde ihn nicht finden, daher der mitgefuehrte Merker.
+    if (this._sectionFocused) return;
     const players   = this._getAMPlayers();
     if (players.length === 0) { this._playerSection.innerHTML = ''; return; }
     const playerCfg = this._config.players || {};
@@ -1778,6 +1858,11 @@ class AmSearchCardEditor extends HTMLElement {
             Immer Aus
           </label>
         </div>
+        <div style="display:flex;gap:8px;padding-left:18px;margin-top:6px;
+                    border-left:2px solid var(--divider-color)">
+          <ha-selector class="player-script-on"  data-entity="${e}" style="flex:1;min-width:0"></ha-selector>
+          <ha-selector class="player-script-off" data-entity="${e}" style="flex:1;min-width:0"></ha-selector>
+        </div>
       </div>`;
     }).join('');
 
@@ -1788,6 +1873,25 @@ class AmSearchCardEditor extends HTMLElement {
         this._dispatch();
       });
     });
+    // Standard-Auswahlfeld von Home Assistant, auf Skripte und Szenen begrenzt
+    const scriptSelector = { entity: { domain: 'script' } };
+    [['player-script-on', 'script_on', 'Skript beim Einschalten'],
+     ['player-script-off', 'script_off', 'Skript beim Ausschalten']].forEach(([cls, key, label]) => {
+      this._playerSection.querySelectorAll('.' + cls).forEach(sel => {
+        const e = sel.dataset.entity;
+        sel.hass     = this._hass;
+        sel.selector = scriptSelector;
+        sel.label    = label;
+        sel.value    = (this._config.players[e] || {})[key] || '';
+        sel.addEventListener('value-changed', (ev) => {
+          ev.stopPropagation();
+          this._config.players = { ...this._config.players,
+            [e]: { ...(this._config.players[e] || {}), [key]: ev.detail.value || '' } };
+          this._dispatch();
+        });
+      });
+    });
+
     this._playerSection.querySelectorAll('.player-hidden').forEach(cb => {
       cb.addEventListener('change', () => {
         const e = cb.dataset.entity;

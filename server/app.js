@@ -1220,6 +1220,42 @@ app.get('/library/artists', function(req, res) {
   });
 });
 
+// Titel der gerade laufenden Wiedergabeliste – auch fuer HA_Play_* Hilfslisten,
+// die in /playlists bewusst ausgeblendet sind. Ohne laufende Liste: leeres Ergebnis.
+function getCurrentPlaylistTracksJXA() {
+  var itunes;
+  try { itunes = Application('Music'); } catch (e) { itunes = Application('iTunes'); }
+  var out = { playlist: '', tracks: [] };
+  var pl;
+  try { pl = itunes.currentPlaylist(); } catch (e) { return out; }
+  if (!pl) { return out; }
+  try { out.playlist = pl.name(); } catch (e) { out.playlist = ''; }
+  var list;
+  try { list = pl.tracks(); } catch (e) { return out; }
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    var id = '';
+    try { id = t.persistentID(); } catch (e) {}
+    if (!id) { continue; }
+    out.tracks.push({
+      id: id,
+      name:        (function(){ try { return t.name() || ''; } catch(e) { return ''; } })(),
+      artist:      (function(){ try { return t.artist() || ''; } catch(e) { return ''; } })(),
+      albumArtist: (function(){ try { return t.albumArtist() || ''; } catch(e) { return ''; } })(),
+      album:       (function(){ try { return t.album() || ''; } catch(e) { return ''; } })(),
+      mediaKind:   (function(){ try { return t.mediaKind() || 'song'; } catch(e) { return 'song'; } })()
+    });
+  }
+  return out;
+}
+
+app.get('/now_playing/tracks', function(req, res) {
+  osa(getCurrentPlaylistTracksJXA, function(error, data) {
+    if (error) { console.log('now-playing-tracks error:', error); return res.sendStatus(500); }
+    res.json(data || { playlist: '', tracks: [] });
+  });
+});
+
 app.get('/library/genres', function(req, res) {
   getLibraryTracks(function(error, tracks) {
     if (error) { console.log(error); return res.sendStatus(500); }
