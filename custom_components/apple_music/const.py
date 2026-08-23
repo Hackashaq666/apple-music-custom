@@ -13,5 +13,6 @@ BROWSE_ARTISTS    = "artists"
 BROWSE_ALBUMS     = "albums"
 BROWSE_TRACKS     = "tracks"
 BROWSE_GENRES     = "genres"
+BROWSE_NOW_PLAYING = "now_playing"
 # Separator used in browse media_content_id paths
 BROWSE_SEP = "||"
