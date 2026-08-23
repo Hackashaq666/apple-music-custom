@@ -159,6 +159,20 @@ class AppleMusicPlayer(CoordinatorEntity, MediaPlayerEntity):
         return MediaType.MUSIC
 
     @property
+    def media_content_id(self) -> str | None:
+        """Persistent ID des laufenden Titels – erlaubt Karten, ihn zu markieren."""
+        if self._state_data.get("player_state") == "stopped":
+            return None
+        return self._state_data.get("id") or None
+
+    @property
+    def media_playlist(self) -> str | None:
+        """Name der laufenden Wiedergabeliste – Karten leiten daraus den Kontext ab."""
+        if self._state_data.get("player_state") == "stopped":
+            return None
+        return self._state_data.get("playlist") or None
+
+    @property
     def media_title(self) -> str | None:
         return self._state_data.get("name")
 
