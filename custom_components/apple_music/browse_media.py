@@ -85,7 +85,7 @@ async def async_browse_media(coordinator, media_content_type, media_content_id, 
                     _track_cid(t, S), True, False,
                     thumbnail=_track_thumb(t, hu, bu, entity, S))
                 for t in data.get("tracks", [])]
-        return _node(data.get("playlist", "") or "Läuft gerade",
+        return _node(data.get("playlist", "") or "Now Playing",
                      MediaClass.PLAYLIST, MediaType.PLAYLIST,
                      BROWSE_NOW_PLAYING, False, True, kids)
 
