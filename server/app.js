@@ -1158,7 +1158,10 @@ app.put('/playlists/:id/play', function(req, res) {
       var tab = line.indexOf('	');
       if (tab === -1) { continue; }
       var pid  = line.substring(0, tab).trim();
-      var name = line.substring(tab + 1).trim();
+      // Lines are `id \t name \t mediaKind`; take only the name field.
+      var rest = line.substring(tab + 1);
+      var tab2 = rest.indexOf('	');
+      var name = (tab2 !== -1 ? rest.substring(0, tab2) : rest).trim();
       if (slugify(name) === idOrSlug || name === idOrSlug) { matchId = pid; break; }
     }
     if (!matchId) { return res.sendStatus(404); }
